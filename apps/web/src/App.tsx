@@ -23,7 +23,6 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './com
 import { Tabs, TabsContent, TabsList, TabsTrigger } from './components/ui/tabs'
 import { Textarea } from './components/ui/textarea'
 import {
-  chatWithAgent,
   checkIntegration,
   decideApproval,
   decideReply,
@@ -44,6 +43,7 @@ import {
   runProspectSearch,
   saveApiKeyConnection,
   stageLaunch,
+  streamChatWithAgent,
   updateOnboarding,
   verifyProspectEmails,
   type ApprovalItem,
@@ -444,7 +444,7 @@ function App() {
     setError(null)
 
     try {
-      const result = await checkIntegration(toolkit, workspaceId, externalUserId)
+      const result = await checkIntegration(toolkit, workspaceId)
       setIntegrationChecks((current) => ({
         ...current,
         [toolkit]: result,
@@ -464,7 +464,7 @@ function App() {
     setError(null)
 
     try {
-      await decideApproval(approvalId, decision)
+      await decideApproval(approvalId, decision, workspaceId)
       await refreshData()
     } catch (decisionError) {
       setError(decisionError instanceof Error ? decisionError.message : 'Could not update approval.')
@@ -478,7 +478,7 @@ function App() {
     setError(null)
 
     try {
-      await decideReply(replyId, decision)
+      await decideReply(replyId, decision, workspaceId)
       await refreshData()
       if (decision === 'approved') {
         setActiveTab('meetings')
@@ -492,24 +492,44 @@ function App() {
 
   async function runPrompt(prompt: string) {
     setChatPrompt(prompt)
-    setChatEntries([{ role: 'user', content: prompt }])
+    setChatEntries([
+      { role: 'user', content: prompt },
+      { role: 'assistant', content: '' },
+    ])
+    setChatMeta(`Streaming ${import.meta.env.VITE_API_URL ?? 'http://localhost:8000'}/chat`)
     setActiveTab('ai')
     setError(null)
 
     startChatTransition(() => {
       void (async () => {
         try {
-          const result = await chatWithAgent({
-            workspace_id: workspaceId,
-            external_user_id: externalUserId,
-            prompt,
-          })
-          setChatMeta(
-            `${result.model_mode.toUpperCase()} mode | connected: ${
-              result.connected_toolkits.join(', ') || 'none'
-            }`,
+          await streamChatWithAgent(
+            {
+              workspace_id: workspaceId,
+              message: prompt,
+            },
+            {
+              onDelta(delta) {
+                setChatEntries((current) =>
+                  current.map((entry, index) =>
+                    index === current.length - 1 && entry.role === 'assistant'
+                      ? { ...entry, content: entry.content + delta }
+                      : entry,
+                  ),
+                )
+              },
+              onDone(finalText) {
+                setChatEntries((current) =>
+                  current.map((entry, index) =>
+                    index === current.length - 1 && entry.role === 'assistant'
+                      ? { ...entry, content: finalText }
+                      : entry,
+                  ),
+                )
+                setChatMeta('GPT-4o streaming response complete')
+              },
+            },
           )
-          setChatEntries((current) => [...current, { role: 'assistant', content: result.response }])
         } catch (chatError) {
           setError(chatError instanceof Error ? chatError.message : 'Chat failed.')
         }

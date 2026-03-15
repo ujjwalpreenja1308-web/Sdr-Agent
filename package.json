@@ -2,11 +2,23 @@
   "name": "pipeiq",
   "private": true,
   "workspaces": [
-    "apps/*"
+    "apps/*",
+    "services/*",
+    "packages/*"
   ],
   "scripts": {
-    "dev:web": "npm --workspace apps/web run dev",
-    "build:web": "npm --workspace apps/web run build",
+    "predev:web": "npm --workspace @pipeiq/shared run build",
+    "dev:web": "cd apps/web && npm run dev",
+    "predev:api": "npm --workspace @pipeiq/shared run build",
+    "dev:api": "cd services/api && npm run dev",
+    "dev": "concurrently \"npm run dev:web\" \"npm run dev:api\"",
+    "prebuild:web": "npm --workspace @pipeiq/shared run build",
+    "build:web": "cd apps/web && npm run build",
+    "prebuild:api": "npm --workspace @pipeiq/shared run build",
+    "build:api": "cd services/api && npm run build",
     "lint:web": "npm --workspace apps/web run lint"
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.1"
   }
 }
