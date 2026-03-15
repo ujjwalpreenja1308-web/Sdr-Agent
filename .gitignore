@@ -1,6 +1,8 @@
 node_modules/
 dist/
 .codex-run/
+.trigger/
+.trigger-build/
 .DS_Store
 Thumbs.db
 .env

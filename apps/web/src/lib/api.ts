@@ -1,4 +1,6 @@
 import type {
+  AgentActionRequest,
+  AgentActionResult,
   AgentCatalog,
   AgentChatResponse,
   AgentId,
@@ -28,6 +30,7 @@ import type {
 } from '@pipeiq/shared'
 
 export type {
+  AgentActionResult,
   AgentCatalog,
   AgentChatResponse,
   AgentId,
@@ -226,6 +229,13 @@ export function getAgentCatalog(workspaceId = 'default') {
 
 export function getAgentPlan(payload: AgentPlanRequest) {
   return request<AgentPlan>('/api/agents/plan', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function executeAgentAction(payload: AgentActionRequest) {
+  return request<AgentActionResult>('/api/agents/act', {
     method: 'POST',
     body: JSON.stringify(payload),
   })

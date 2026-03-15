@@ -2,15 +2,20 @@ import { Hono } from 'hono'
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions'
 
 import type {
+  AgentActionRequest,
+  AgentActionResult,
+  AgentActionRun,
   AgentCatalog,
   AgentChatRequest,
   AgentChatResponse,
   AgentPlan,
   AgentPlanRequest,
+  AgentRunState,
   ChatMessage,
   StreamingChatRequest,
 } from '@pipeiq/shared'
 
+import { executeAgentAction } from '../agents/actions.js'
 import {
   buildAgentPlan,
   createAgentStream,
@@ -19,6 +24,7 @@ import {
 } from '../agents/service.js'
 import { env } from '../lib/env.js'
 import { ensureWorkspaceRecord, getSupabaseAdmin } from '../lib/supabase.js'
+import { enqueueAgentRun, getAgentRunState } from '../lib/trigger.js'
 import type { AppEnv } from '../types.js'
 
 export const chatRoutes = new Hono<AppEnv>()
@@ -97,6 +103,58 @@ chatRoutes.post('/api/agents/plan', async (c) => {
     payload.agent_id,
   )
   return c.json(plan)
+})
+
+chatRoutes.post('/api/agents/act', async (c) => {
+  const payload = await c.req.json<AgentActionRequest>()
+  await ensureWorkspaceRecord(payload.workspace_id, c.get('orgId'))
+  const result: AgentActionResult = await executeAgentAction({
+    workspaceId: payload.workspace_id,
+    orgId: c.get('orgId'),
+    ...(payload.prompt ? { prompt: payload.prompt } : {}),
+    ...(payload.agent_id ? { preferredAgentId: payload.agent_id } : {}),
+  })
+  return c.json(result)
+})
+
+chatRoutes.post('/api/agents/act/async', async (c) => {
+  const payload = await c.req.json<AgentActionRequest>()
+  await ensureWorkspaceRecord(payload.workspace_id, c.get('orgId'))
+
+  try {
+    const result: AgentActionRun = await enqueueAgentRun(payload, c.get('orgId'))
+    return c.json(result, 202)
+  } catch (error) {
+    return c.json(
+      {
+        detail:
+          error instanceof Error
+            ? error.message
+            : 'Unable to enqueue the agent action.',
+      },
+      503,
+    )
+  }
+})
+
+chatRoutes.get('/api/agents/runs/:runId', async (c) => {
+  const runId = c.req.param('runId')
+
+  try {
+    const result: AgentRunState = await getAgentRunState(runId)
+    await ensureWorkspaceRecord(result.workspace_id, c.get('orgId'))
+    return c.json(result)
+  } catch (error) {
+    return c.json(
+      {
+        detail:
+          error instanceof Error
+            ? error.message
+            : 'Unable to load the agent run status.',
+      },
+      404,
+    )
+  }
 })
 
 chatRoutes.post('/chat', async (c) => {

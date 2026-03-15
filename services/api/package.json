@@ -5,21 +5,27 @@
   "type": "module",
   "scripts": {
     "dev": "npm --prefix ../../packages/shared run build && tsx watch src/index.ts",
+    "dev:trigger": "npx trigger.dev dev",
     "build": "npm --prefix ../../packages/shared run build && tsc -p tsconfig.json",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "typecheck:trigger": "tsc -p tsconfig.trigger.json --noEmit",
+    "deploy:trigger": "npx trigger.dev deploy"
   },
   "dependencies": {
     "@composio/core": "^0.5.4",
     "@hono/node-server": "^1.14.4",
     "@pipeiq/shared": "*",
     "@supabase/supabase-js": "^2.57.4",
+    "@trigger.dev/sdk": "^4.4.3",
     "dotenv": "^17.2.3",
     "hono": "^4.10.5",
     "jose": "^6.1.1",
     "openai": "^6.6.0"
   },
   "devDependencies": {
+    "@trigger.dev/build": "^4.4.3",
     "@types/node": "^24.5.2",
+    "trigger.dev": "^4.4.3",
     "tsx": "^4.20.5",
     "typescript": "^5.9.2"
   }

@@ -23,6 +23,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './com
 import { Tabs, TabsContent, TabsList, TabsTrigger } from './components/ui/tabs'
 import { Textarea } from './components/ui/textarea'
 import {
+  executeAgentAction,
   getAgentCatalog,
   getAgentPlan,
   checkIntegration,
@@ -49,6 +50,7 @@ import {
   updateOnboarding,
   verifyProspectEmails,
   type AgentCatalog,
+  type AgentActionResult,
   type AgentId,
   type AgentPlan,
   type ApprovalItem,
@@ -116,6 +118,7 @@ function App() {
   const [agentCatalog, setAgentCatalog] = useState<AgentCatalog | null>(null)
   const [agentPlan, setAgentPlan] = useState<AgentPlan | null>(null)
   const [selectedAgentId, setSelectedAgentId] = useState<AgentId | null>(null)
+  const [lastAgentAction, setLastAgentAction] = useState<AgentActionResult | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [busyToolkit, setBusyToolkit] = useState<string | null>(null)
   const [busyApprovalId, setBusyApprovalId] = useState<string | null>(null)
@@ -128,6 +131,7 @@ function App() {
   const [isVerifyingProspects, startVerificationTransition] = useTransition()
   const [isLaunchingCampaign, startLaunchTransition] = useTransition()
   const [isRegisteringWebhook, startWebhookTransition] = useTransition()
+  const [isActingAgent, startAgentActionTransition] = useTransition()
 
   const pendingApprovals = useMemo(
     () => approvals.filter((approval) => approval.status === 'pending'),
@@ -623,6 +627,37 @@ function App() {
     }
   }
 
+  async function handleExecuteAgent() {
+    const effectiveAgentId = selectedAgentId ?? agentCatalog?.recommended_agent_id
+    if (!effectiveAgentId) {
+      return
+    }
+
+    setError(null)
+    startAgentActionTransition(() => {
+      void (async () => {
+        try {
+          const result = await executeAgentAction({
+            workspace_id: workspaceId,
+            agent_id: effectiveAgentId,
+            prompt: chatPrompt,
+          })
+          setLastAgentAction(result)
+          setChatMeta(`${result.selected_agent_label}: ${result.summary}`)
+          await refreshData()
+          const nextPlan = await getAgentPlan({
+            workspace_id: workspaceId,
+            agent_id: effectiveAgentId,
+            prompt: chatPrompt,
+          })
+          setAgentPlan(nextPlan)
+        } catch (actionError) {
+          setError(actionError instanceof Error ? actionError.message : 'Could not run agent action.')
+        }
+      })()
+    })
+  }
+
   if (
     !workspace ||
     !onboarding ||
@@ -884,12 +919,15 @@ function App() {
             <TabsContent value="ai" className="h-full">
               <AiPanel
                 agentCatalog={agentCatalog}
+                agentAction={lastAgentAction}
                 agentPlan={agentPlan}
                 chatEntries={chatEntries}
                 chatMeta={chatMeta}
                 chatPrompt={chatPrompt}
+                isActingAgent={isActingAgent}
                 isChatPending={isChatPending}
                 selectedAgentId={selectedAgentId}
+                onExecuteAgent={handleExecuteAgent}
                 onPromptChange={setChatPrompt}
                 onPromptSubmit={handleChatSubmit}
                 onSelectAgent={handleSelectAgent}
@@ -1053,24 +1091,30 @@ function OverviewPanel({
 
 function AiPanel({
   agentCatalog,
+  agentAction,
   agentPlan,
   chatEntries,
   chatMeta,
   chatPrompt,
+  isActingAgent,
   isChatPending,
   selectedAgentId,
+  onExecuteAgent,
   onPromptChange,
   onPromptSubmit,
   onSelectAgent,
   onSuggestionClick,
 }: {
   agentCatalog: AgentCatalog | null
+  agentAction: AgentActionResult | null
   agentPlan: AgentPlan | null
   chatEntries: ChatEntry[]
   chatMeta: string
   chatPrompt: string
+  isActingAgent: boolean
   isChatPending: boolean
   selectedAgentId: AgentId | null
+  onExecuteAgent: () => Promise<void>
   onPromptChange: (value: string) => void
   onPromptSubmit: (event: FormEvent<HTMLFormElement>) => Promise<void>
   onSelectAgent: (agentId: AgentId) => Promise<void>
@@ -1164,6 +1208,12 @@ function AiPanel({
                   ))}
                 </div>
               ) : null}
+              {agentAction ? (
+                <div className="mt-3 rounded-xl border border-border bg-background px-3 py-3">
+                  <p className="text-sm font-medium">Last execution</p>
+                  <p className="mt-1 text-sm text-muted-foreground">{agentAction.summary}</p>
+                </div>
+              ) : null}
             </div>
 
             <div className="grid gap-3">
@@ -1226,9 +1276,20 @@ function AiPanel({
             value={chatPrompt}
             onChange={(event) => onPromptChange(event.target.value)}
           />
-          <Button className="h-full min-w-28" disabled={isChatPending} type="submit">
-            {isChatPending ? 'Running...' : 'Run agent'}
-          </Button>
+          <div className="grid h-full grid-rows-2 gap-3">
+            <Button className="min-w-28" disabled={isChatPending} type="submit">
+              {isChatPending ? 'Streaming...' : 'Ask agent'}
+            </Button>
+            <Button
+              className="min-w-28"
+              disabled={isActingAgent}
+              type="button"
+              variant="outline"
+              onClick={() => void onExecuteAgent()}
+            >
+              {isActingAgent ? 'Executing...' : 'Run action'}
+            </Button>
+          </div>
         </form>
       </CardContent>
       </Card>

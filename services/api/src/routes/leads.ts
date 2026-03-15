@@ -5,6 +5,7 @@ import type {
   ProspectVerificationRequest,
 } from '@pipeiq/shared'
 
+import { searchApolloProspects } from '../lib/apollo.js'
 import { getRuntimeStore } from '../lib/runtime-store.js'
 import { ensureWorkspaceRecord } from '../lib/supabase.js'
 import type { AppEnv } from '../types.js'
@@ -26,7 +27,57 @@ leadsRoutes.get('/api/prospects/:workspaceId', async (c) => {
 leadsRoutes.post('/api/prospects/:workspaceId/run', async (c) => {
   const workspaceId = c.req.param('workspaceId')
   await ensureWorkspaceRecord(workspaceId, c.get('orgId'))
-  return c.json(getRuntimeStore().runProspectSearch(workspaceId))
+  const store = getRuntimeStore()
+  const workspace = store.getWorkspaceSummary(workspaceId)
+  const apolloConnected = workspace.connections.some(
+    (connection) => connection.toolkit === 'apollo' && connection.status === 'connected',
+  )
+
+  if (!apolloConnected) {
+    return c.json(store.runProspectSearch(workspaceId))
+  }
+
+  try {
+    const onboarding = store.getOnboarding(workspaceId)
+    const prospects = await searchApolloProspects({
+      workspaceId,
+      orgId: c.get('orgId'),
+      onboarding,
+      limit: 10,
+    })
+
+    if (prospects.length === 0) {
+      return c.json(
+        store.applyProspectSearch(
+          workspaceId,
+          [],
+          'live',
+          'Apollo live search returned no prospects for the current filters.',
+        ),
+      )
+    }
+
+    return c.json(
+      store.applyProspectSearch(
+        workspaceId,
+        prospects,
+        'live',
+        'Apollo prospecting ran through the Composio connection.',
+      ),
+    )
+  } catch (error) {
+    return c.json(
+      store.applyProspectSearch(
+        workspaceId,
+        [],
+        'live',
+        error instanceof Error
+          ? `Apollo live search failed: ${error.message}`
+          : 'Apollo live search failed.',
+      ),
+      502,
+    )
+  }
 })
 
 leadsRoutes.post('/api/prospects/:workspaceId/verify-emails', async (c) => {

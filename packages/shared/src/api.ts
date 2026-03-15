@@ -297,6 +297,54 @@ export interface AgentPlanRequest {
   agent_id?: AgentId
 }
 
+export interface AgentActionRequest {
+  workspace_id: string
+  prompt?: string
+  agent_id?: AgentId
+}
+
+export interface AgentActionResult {
+  workspace_id: string
+  selected_agent_id: AgentId
+  selected_agent_label: string
+  executed: boolean
+  summary: string
+  details: string[]
+  next_action?: string
+}
+
+export type AgentRunStatus =
+  | 'queued'
+  | 'executing'
+  | 'waiting'
+  | 'completed'
+  | 'failed'
+  | 'canceled'
+
+export interface AgentActionRun {
+  run_id: string
+  task_id: string
+  workspace_id: string
+  selected_agent_id: AgentId
+  selected_agent_label: string
+  status: AgentRunStatus
+  queued: boolean
+  next_poll_path: string
+}
+
+export interface AgentRunState {
+  run_id: string
+  task_id: string
+  workspace_id: string
+  selected_agent_id: AgentId
+  selected_agent_label: string
+  status: AgentRunStatus
+  is_completed: boolean
+  is_success: boolean
+  result?: AgentActionResult
+  error?: string
+}
+
 export interface OAuthConnectionRequest {
   workspace_id: string
   external_user_id: string

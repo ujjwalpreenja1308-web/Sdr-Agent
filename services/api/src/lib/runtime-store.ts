@@ -7,6 +7,7 @@ import {
   type ConnectionStatus,
   type ConnectionTarget,
   type ContactPreview,
+  type EmailDraft,
   type InstantlyWebhookEvent,
   type InstantlyWebhookSubscription,
   type IntegrationCheckResult,
@@ -38,6 +39,7 @@ type WorkspaceState = {
   onboarding: OnboardingProfile
   prospectRun: ProspectRunSummary
   contacts: ContactPreview[]
+  drafts: EmailDraft[]
   approvals: ApprovalItem[]
   campaign: CampaignSummary
   replies: ReplyQueueItem[]
@@ -45,6 +47,16 @@ type WorkspaceState = {
   webhook: InstantlyWebhookSubscription
   pipelineGenerated: boolean
   connections: Map<string, ConnectionRecord>
+}
+
+type ProspectSeed = {
+  fullName: string
+  title: string
+  company: string
+  email: string
+  signalType: string
+  signalDetail: string
+  score: number
 }
 
 const DEFAULT_WORKSPACE_NAME = 'PipeIQ Launch Workspace'
@@ -219,6 +231,7 @@ export class RuntimeStore {
       onboarding: defaultOnboarding(workspaceId),
       prospectRun: defaultProspectRun(workspaceId),
       contacts: [],
+      drafts: [],
       approvals: [],
       campaign: defaultCampaign(workspaceId),
       replies: [],
@@ -338,6 +351,7 @@ export class RuntimeStore {
       note: 'Update the Apollo prospect run because the onboarding profile changed.',
     }
     state.contacts = []
+    state.drafts = []
     state.approvals = []
     state.campaign = defaultCampaign(workspaceId)
     state.replies = []
@@ -382,6 +396,21 @@ export class RuntimeStore {
       },
     ]
 
+    return this.applyProspectSearch(
+      workspaceId,
+      generated,
+      'mock',
+      'Apollo prospecting is scaffolded in this migration. Replace with live Composio tool execution next.',
+    )
+  }
+
+  applyProspectSearch(
+    workspaceId: string,
+    generated: ProspectSeed[],
+    mode: 'live' | 'mock',
+    note: string,
+  ): ProspectRunSummary {
+    const state = this.ensure(workspaceId)
     state.contacts = generated.map((item, index) => ({
       id: `contact_${workspaceId}_${index + 1}`,
       full_name: item.fullName,
@@ -398,6 +427,7 @@ export class RuntimeStore {
         'Prospect sourced and enriched. Generate the batch to create the pre-rendered sequence.',
     }))
     state.approvals = []
+    state.drafts = []
     state.pipelineGenerated = false
     state.campaign = defaultCampaign(workspaceId)
     state.replies = []
@@ -405,12 +435,12 @@ export class RuntimeStore {
     state.prospectRun = {
       workspace_id: workspaceId,
       status: 'completed',
-      mode: 'mock',
+      mode,
       sourced_count: generated.length,
       enriched_count: generated.length,
       deduped_count: generated.length,
       filters: this.prospectFilters(workspaceId),
-      note: 'Apollo prospecting is scaffolded in this migration. Replace with live Composio tool execution next.',
+      note,
       last_run_at: nowIso(),
     }
     return this.getProspectRun(workspaceId)
@@ -480,6 +510,7 @@ export class RuntimeStore {
         samples,
       },
     ]
+    state.drafts = []
     state.pipelineGenerated = true
     return this.getPipeline(workspaceId)
   }
@@ -530,6 +561,34 @@ export class RuntimeStore {
       metrics,
       contacts: structuredClone(state.contacts),
     }
+  }
+
+  listContacts(workspaceId: string): ContactPreview[] {
+    return structuredClone(this.ensure(workspaceId).contacts)
+  }
+
+  listEmailDrafts(workspaceId: string): EmailDraft[] {
+    return structuredClone(this.ensure(workspaceId).drafts)
+  }
+
+  saveEmailDrafts(workspaceId: string, drafts: EmailDraft[]): EmailDraft[] {
+    const state = this.ensure(workspaceId)
+    state.drafts = drafts.map((draft) => structuredClone(draft))
+
+    for (const draft of state.drafts) {
+      const contact = state.contacts.find((item) => item.id === draft.contact_id)
+      if (!contact) {
+        continue
+      }
+
+      contact.subject = draft.subject_1 ?? contact.subject
+      contact.body_preview = draft.body_1 ?? contact.body_preview
+      if (contact.status === 'drafted') {
+        contact.status = 'ready_for_review'
+      }
+    }
+
+    return this.listEmailDrafts(workspaceId)
   }
 
   getLaunchReadiness(workspaceId: string): LaunchReadiness {
@@ -680,6 +739,40 @@ export class RuntimeStore {
     }
   }
 
+  recordInstantlyLaunch(
+    workspaceId: string,
+    campaignId: string,
+    importedCount: number,
+    summary: string,
+  ): LaunchResult {
+    const state = this.ensure(workspaceId)
+    state.campaign = {
+      workspace_id: workspaceId,
+      status: 'running',
+      campaign_name: state.campaign.campaign_name ?? `${this.getWorkspaceSummary(workspaceId).name} - Instantly Campaign`,
+      campaign_id: campaignId,
+      provider: 'instantly',
+      mode: 'live',
+      contacts_launched: importedCount,
+      reply_rate: state.campaign.reply_rate,
+      positive_replies: state.campaign.positive_replies,
+      meetings_booked: state.campaign.meetings_booked,
+      last_sync_at: nowIso(),
+    }
+
+    return {
+      workspace_id: workspaceId,
+      status: 'staged',
+      campaign_name: state.campaign.campaign_name ?? null,
+      campaign_id: campaignId,
+      provider: 'instantly',
+      mode: 'live',
+      contacts_launched: importedCount,
+      message: summary,
+      blockers: [],
+    }
+  }
+
   getCampaign(workspaceId: string): CampaignSummary {
     return structuredClone(this.ensure(workspaceId).campaign)
   }
@@ -703,6 +796,57 @@ export class RuntimeStore {
 
   listReplies(workspaceId: string): ReplyQueueItem[] {
     return structuredClone(this.ensure(workspaceId).replies)
+  }
+
+  addProcessedReply(
+    workspaceId: string,
+    reply: ReplyQueueItem,
+    createApproval: boolean,
+  ): ReplyQueueItem {
+    const state = this.ensure(workspaceId)
+    const existingIndex = state.replies.findIndex((item) => item.id === reply.id)
+    if (existingIndex >= 0) {
+      state.replies[existingIndex] = structuredClone(reply)
+    } else {
+      state.replies.push(structuredClone(reply))
+    }
+
+    if (createApproval) {
+      const approvalId = `approval_reply_${reply.id}`
+      state.approvals = [
+        {
+          id: approvalId,
+          type: 'reply_review',
+          title: `Reply review for ${reply.contact_name}`,
+          summary: reply.summary,
+          status: 'pending',
+          priority: reply.classification === 'INTERESTED' ? 'high' : 'medium',
+          created_at: nowIso(),
+          sample_size: 1,
+          samples: [
+            {
+              contact_id: reply.contact_id,
+              contact_name: reply.contact_name,
+              company: reply.company,
+              signal: reply.classification,
+              subject: 'Reply review',
+              body: reply.draft_reply,
+            },
+          ],
+        },
+        ...state.approvals.filter((item) => item.id !== approvalId),
+      ]
+    }
+
+    state.campaign.reply_rate =
+      state.campaign.contacts_launched > 0
+        ? Number(((state.replies.length / state.campaign.contacts_launched) * 100).toFixed(1))
+        : 0
+    state.campaign.positive_replies = state.replies.filter(
+      (item) => item.classification === 'INTERESTED',
+    ).length
+
+    return structuredClone(reply)
   }
 
   decideReply(workspaceId: string, replyId: string, decision: 'approved' | 'dismissed'): ReplyQueueItem {
@@ -805,6 +949,48 @@ export class RuntimeStore {
       accepted: true,
       action,
     }
+  }
+
+  createReengagementDraft(
+    workspaceId: string,
+    contactId: string,
+    subject: string,
+    body: string,
+  ): ApprovalItem {
+    const state = this.ensure(workspaceId)
+    const contact = state.contacts.find((item) => item.id === contactId)
+    if (!contact) {
+      throw new Error(`Unknown contact id: ${contactId}`)
+    }
+
+    const approvalId = `approval_reengage_${contactId}`
+    const approval: ApprovalItem = {
+      id: approvalId,
+      type: 'sequence_update',
+      title: `Re-engage ${contact.full_name}`,
+      summary: 'A re-engagement draft is ready after a NOT_NOW reply.',
+      status: 'pending',
+      priority: 'medium',
+      created_at: nowIso(),
+      sample_size: 1,
+      samples: [
+        {
+          contact_id: contact.id,
+          contact_name: contact.full_name,
+          company: contact.company,
+          signal: 'NOT_NOW re-engagement',
+          subject,
+          body,
+        },
+      ],
+    }
+
+    state.approvals = [
+      approval,
+      ...state.approvals.filter((item) => item.id !== approvalId),
+    ]
+
+    return structuredClone(approval)
   }
 
   recordConnectionLaunch(

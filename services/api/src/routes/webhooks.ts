@@ -1,9 +1,12 @@
 import { Hono } from 'hono'
+import { tasks } from '@trigger.dev/sdk/v3'
 
 import type { AuditLog, InstantlyWebhookEvent, JsonObject } from '@pipeiq/shared'
 
+import type { processInstantlyReplyTask } from '../trigger/outbound-jobs.js'
 import { getRuntimeStore } from '../lib/runtime-store.js'
 import { getSupabaseAdmin } from '../lib/supabase.js'
+import { env } from '../lib/env.js'
 import type { AppEnv } from '../types.js'
 
 export const webhooksRoutes = new Hono<AppEnv>()
@@ -42,6 +45,21 @@ async function logAuditEvent(workspaceId: string, event: InstantlyWebhookEvent):
   }
 }
 
+async function enqueueReplyProcessing(
+  workspaceId: string,
+  event: InstantlyWebhookEvent,
+): Promise<void> {
+  if (!env.triggerSecretKey) {
+    getRuntimeStore().ingestInstantlyEvent(workspaceId, event)
+    return
+  }
+
+  await tasks.trigger<typeof processInstantlyReplyTask>('process-instantly-reply', {
+    workspaceId,
+    event,
+  })
+}
+
 webhooksRoutes.post('/webhooks/instantly', async (c) => {
   const payload = await c.req.json<InstantlyWebhookEvent>()
 
@@ -51,9 +69,12 @@ webhooksRoutes.post('/webhooks/instantly', async (c) => {
 
   const workspaceId = payload.workspace || 'default'
   await logAuditEvent(workspaceId, payload)
-  const receipt = getRuntimeStore().ingestInstantlyEvent(workspaceId, payload)
-  console.info('Queued Instantly webhook for background processing stub.', receipt)
-  return c.json(receipt, 200)
+  await enqueueReplyProcessing(workspaceId, payload)
+  console.info('Queued Instantly webhook for background processing.', {
+    workspaceId,
+    eventType: payload.event_type,
+  })
+  return c.json({ accepted: true }, 200)
 })
 
 webhooksRoutes.post('/api/webhooks/instantly', async (c) => {
@@ -65,7 +86,10 @@ webhooksRoutes.post('/api/webhooks/instantly', async (c) => {
 
   const workspaceId = payload.workspace || 'default'
   await logAuditEvent(workspaceId, payload)
-  const receipt = getRuntimeStore().ingestInstantlyEvent(workspaceId, payload)
-  console.info('Queued Instantly webhook for background processing stub.', receipt)
-  return c.json(receipt, 200)
+  await enqueueReplyProcessing(workspaceId, payload)
+  console.info('Queued Instantly webhook for background processing.', {
+    workspaceId,
+    eventType: payload.event_type,
+  })
+  return c.json({ accepted: true }, 200)
 })
