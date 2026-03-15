@@ -1,5 +1,9 @@
 import type {
+  AgentCatalog,
   AgentChatResponse,
+  AgentId,
+  AgentPlan,
+  AgentPlanRequest,
   ApiKeyConnectionRequest,
   ApprovalDecisionRequest,
   ApprovalItem,
@@ -24,7 +28,10 @@ import type {
 } from '@pipeiq/shared'
 
 export type {
+  AgentCatalog,
   AgentChatResponse,
+  AgentId,
+  AgentPlan,
   ApprovalItem,
   CampaignSummary,
   ConnectionStatus,
@@ -213,9 +220,26 @@ export function checkIntegration(toolkit: string, workspaceId = 'default') {
   })
 }
 
+export function getAgentCatalog(workspaceId = 'default') {
+  return request<AgentCatalog>(`/api/agents/${workspaceId}/catalog`)
+}
+
+export function getAgentPlan(payload: AgentPlanRequest) {
+  return request<AgentPlan>('/api/agents/plan', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
 type StreamHandlers = {
   onDelta: (delta: string) => void
   onDone?: (finalText: string) => void
+  onMeta?: (payload: {
+    model?: string
+    selected_agent_id?: AgentId
+    selected_agent_label?: string
+    suggested_prompts?: string[]
+  }) => void
 }
 
 export async function streamChatWithAgent(
@@ -276,6 +300,15 @@ export async function streamChatWithAgent(
         handlers.onDelta(payloadJson.delta)
       }
 
+      if (eventType === 'meta') {
+        handlers.onMeta?.(payloadJson as {
+          model?: string
+          selected_agent_id?: AgentId
+          selected_agent_label?: string
+          suggested_prompts?: string[]
+        })
+      }
+
       if (eventType === 'done') {
         handlers.onDone?.(payloadJson.response ?? completeText)
       }
@@ -291,6 +324,7 @@ export async function chatWithAgent(payload: {
   workspace_id: string
   external_user_id: string
   prompt: string
+  agent_id?: AgentId
 }) {
   return request<AgentChatResponse>('/api/agents/chat', {
     method: 'POST',

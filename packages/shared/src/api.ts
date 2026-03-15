@@ -246,6 +246,55 @@ export interface AgentChatResponse {
   response: string
   connected_toolkits: string[]
   model_mode: 'live' | 'offline'
+  selected_agent_id?: AgentId
+  selected_agent_label?: string
+  suggested_prompts?: string[]
+}
+
+export type AgentId =
+  | 'operator'
+  | 'strategist'
+  | 'prospector'
+  | 'copywriter'
+  | 'launcher'
+  | 'reply'
+  | 'meetings'
+
+export interface AgentSummary {
+  id: AgentId
+  label: string
+  description: string
+  focus: string
+  status: 'ready' | 'attention' | 'blocked'
+  rationale: string
+  suggested_prompts: string[]
+}
+
+export interface AgentCatalog {
+  workspace_id: string
+  recommended_agent_id: AgentId
+  agents: AgentSummary[]
+}
+
+export interface AgentPlanSection {
+  title: string
+  bullets: string[]
+}
+
+export interface AgentPlan {
+  workspace_id: string
+  selected_agent_id: AgentId
+  selected_agent_label: string
+  summary: string
+  blockers: string[]
+  next_actions: string[]
+  sections: AgentPlanSection[]
+}
+
+export interface AgentPlanRequest {
+  workspace_id: string
+  prompt?: string
+  agent_id?: AgentId
 }
 
 export interface OAuthConnectionRequest {
@@ -311,9 +360,11 @@ export interface AgentChatRequest {
   workspace_id: string
   external_user_id: string
   prompt: string
+  agent_id?: AgentId
 }
 
 export interface StreamingChatRequest {
   workspace_id: string
   message: string
+  agent_id?: AgentId
 }

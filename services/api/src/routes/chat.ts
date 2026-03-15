@@ -1,11 +1,23 @@
 import { Hono } from 'hono'
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions'
 
-import type { AgentChatResponse, ChatMessage, StreamingChatRequest } from '@pipeiq/shared'
+import type {
+  AgentCatalog,
+  AgentChatRequest,
+  AgentChatResponse,
+  AgentPlan,
+  AgentPlanRequest,
+  ChatMessage,
+  StreamingChatRequest,
+} from '@pipeiq/shared'
 
+import {
+  buildAgentPlan,
+  createAgentStream,
+  getAgentCatalog,
+  runAgentChat,
+} from '../agents/service.js'
 import { env } from '../lib/env.js'
-import { getOpenAiClient } from '../lib/openai.js'
-import { getRuntimeStore } from '../lib/runtime-store.js'
 import { ensureWorkspaceRecord, getSupabaseAdmin } from '../lib/supabase.js'
 import type { AppEnv } from '../types.js'
 
@@ -62,15 +74,6 @@ async function saveChatMessage(workspaceId: string, role: 'user' | 'assistant', 
   }
 }
 
-function systemPrompt(workspaceName: string): string {
-  return [
-    'You are PipeIQ, an autonomous outbound operator for B2B teams.',
-    'Be concise, operational, and bias toward concrete next actions.',
-    'Only claim actions were completed if the request explicitly says they already happened.',
-    `The active workspace is ${workspaceName}.`,
-  ].join(' ')
-}
-
 function toOpenAiMessages(history: ChatMessage[]): ChatCompletionMessageParam[] {
   return history.map((message) => ({
     role: message.role === 'assistant' ? 'assistant' : 'user',
@@ -78,30 +81,35 @@ function toOpenAiMessages(history: ChatMessage[]): ChatCompletionMessageParam[] 
   }))
 }
 
+chatRoutes.get('/api/agents/:workspaceId/catalog', async (c) => {
+  const workspaceId = c.req.param('workspaceId')
+  await ensureWorkspaceRecord(workspaceId, c.get('orgId'))
+  const catalog: AgentCatalog = getAgentCatalog(workspaceId)
+  return c.json(catalog)
+})
+
+chatRoutes.post('/api/agents/plan', async (c) => {
+  const payload = await c.req.json<AgentPlanRequest>()
+  await ensureWorkspaceRecord(payload.workspace_id, c.get('orgId'))
+  const plan: AgentPlan = buildAgentPlan(
+    payload.workspace_id,
+    payload.prompt,
+    payload.agent_id,
+  )
+  return c.json(plan)
+})
+
 chatRoutes.post('/chat', async (c) => {
   const payload = await c.req.json<StreamingChatRequest>()
   await ensureWorkspaceRecord(payload.workspace_id, c.get('orgId'))
 
-  const workspace = getRuntimeStore().getWorkspaceSummary(payload.workspace_id)
   const history = await loadRecentChatMessages(payload.workspace_id)
   await saveChatMessage(payload.workspace_id, 'user', payload.message)
-
-  const openai = getOpenAiClient()
-  const messages: ChatCompletionMessageParam[] = [
-    {
-      role: 'system',
-      content: systemPrompt(workspace.name),
-    },
-    ...toOpenAiMessages(history),
-    {
-      role: 'user',
-      content: payload.message,
-    },
-  ]
-  const stream = await openai.chat.completions.create({
-    model: env.openAiModel,
-    stream: true,
-    messages,
+  const { agent, stream } = await createAgentStream({
+    workspaceId: payload.workspace_id,
+    prompt: payload.message,
+    history: toOpenAiMessages(history),
+    ...(payload.agent_id ? { preferredAgentId: payload.agent_id } : {}),
   })
 
   const encoder = new TextEncoder()
@@ -110,7 +118,14 @@ chatRoutes.post('/chat', async (c) => {
   const responseStream = new ReadableStream<Uint8Array>({
     async start(controller) {
       controller.enqueue(
-        encoder.encode(`event: meta\ndata: ${JSON.stringify({ model: env.openAiModel })}\n\n`),
+        encoder.encode(
+          `event: meta\ndata: ${JSON.stringify({
+            model: env.openAiModel,
+            selected_agent_id: agent.id,
+            selected_agent_label: agent.label,
+            suggested_prompts: agent.defaultPrompts,
+          })}\n\n`,
+        ),
       )
 
       try {
@@ -148,39 +163,18 @@ chatRoutes.post('/chat', async (c) => {
 })
 
 chatRoutes.post('/api/agents/chat', async (c) => {
-  const payload = await c.req.json<{ workspace_id: string; prompt: string }>()
+  const payload = await c.req.json<AgentChatRequest>()
   await ensureWorkspaceRecord(payload.workspace_id, c.get('orgId'))
-  const workspace = getRuntimeStore().getWorkspaceSummary(payload.workspace_id)
   const history = await loadRecentChatMessages(payload.workspace_id)
   await saveChatMessage(payload.workspace_id, 'user', payload.prompt)
-
-  const openai = getOpenAiClient()
-  const messages: ChatCompletionMessageParam[] = [
-    {
-      role: 'system',
-      content: systemPrompt(workspace.name),
-    },
-    ...toOpenAiMessages(history),
-    {
-      role: 'user',
-      content: payload.prompt,
-    },
-  ]
-  const response = await openai.chat.completions.create({
-    model: env.openAiModel,
-    messages,
+  const { content, result } = await runAgentChat({
+    workspaceId: payload.workspace_id,
+    prompt: payload.prompt,
+    history: toOpenAiMessages(history),
+    ...(payload.agent_id ? { preferredAgentId: payload.agent_id } : {}),
   })
+  await saveChatMessage(payload.workspace_id, 'assistant', content)
 
-  const text = response.choices[0]?.message?.content ?? ''
-  await saveChatMessage(payload.workspace_id, 'assistant', text)
-
-  const result: AgentChatResponse = {
-    response: text,
-    connected_toolkits: workspace.connections
-      .filter((connection) => connection.status === 'connected')
-      .map((connection) => connection.toolkit),
-    model_mode: env.openAiApiKey ? 'live' : 'offline',
-  }
-
-  return c.json(result)
+  const typedResult: AgentChatResponse = result
+  return c.json(typedResult)
 })

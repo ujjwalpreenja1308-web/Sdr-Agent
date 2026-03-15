@@ -23,6 +23,8 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './com
 import { Tabs, TabsContent, TabsList, TabsTrigger } from './components/ui/tabs'
 import { Textarea } from './components/ui/textarea'
 import {
+  getAgentCatalog,
+  getAgentPlan,
   checkIntegration,
   decideApproval,
   decideReply,
@@ -46,6 +48,9 @@ import {
   streamChatWithAgent,
   updateOnboarding,
   verifyProspectEmails,
+  type AgentCatalog,
+  type AgentId,
+  type AgentPlan,
   type ApprovalItem,
   type CampaignSummary,
   type InstantlyWebhookSubscription,
@@ -68,7 +73,7 @@ import {
 const externalUserId = 'founder-demo'
 const workspaceId = 'default'
 const apiBaseUrl = import.meta.env.VITE_API_URL ?? 'http://localhost:8000'
-const suggestions = [
+const defaultSuggestions = [
   'Show blockers to first launch',
   'Summarize approvals waiting today',
   'What should I connect next?',
@@ -108,6 +113,9 @@ function App() {
   const [chatPrompt, setChatPrompt] = useState('Show blockers to first launch')
   const [chatEntries, setChatEntries] = useState<ChatEntry[]>([])
   const [chatMeta, setChatMeta] = useState('')
+  const [agentCatalog, setAgentCatalog] = useState<AgentCatalog | null>(null)
+  const [agentPlan, setAgentPlan] = useState<AgentPlan | null>(null)
+  const [selectedAgentId, setSelectedAgentId] = useState<AgentId | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [busyToolkit, setBusyToolkit] = useState<string | null>(null)
   const [busyApprovalId, setBusyApprovalId] = useState<string | null>(null)
@@ -157,6 +165,7 @@ function App() {
         nextProspectRun,
         nextPipeline,
         nextApprovals,
+        nextAgentCatalog,
       ] =
         await Promise.all([
         getLaunchReadiness(workspaceId),
@@ -169,6 +178,7 @@ function App() {
         getProspectRun(workspaceId),
         getPipeline(workspaceId),
         getApprovals(workspaceId),
+        getAgentCatalog(workspaceId),
         ])
       setLaunchReadiness(nextReadiness)
       setCampaign(nextCampaign)
@@ -181,6 +191,8 @@ function App() {
       setProspectRun(nextProspectRun)
       setPipeline(nextPipeline)
       setApprovals(nextApprovals)
+      setAgentCatalog(nextAgentCatalog)
+      setSelectedAgentId((current) => current ?? nextAgentCatalog.recommended_agent_id)
       setError(null)
       if (!hasInitialized) {
         const missingRequiredConnections = nextWorkspace.connections.some(
@@ -227,6 +239,34 @@ function App() {
     }, 15000)
     return () => window.clearInterval(interval)
   }, [hasInitialized, refreshData])
+
+  useEffect(() => {
+    const effectiveAgentId = selectedAgentId ?? agentCatalog?.recommended_agent_id
+    if (!effectiveAgentId) {
+      return
+    }
+
+    let cancelled = false
+    void (async () => {
+      try {
+        const nextPlan = await getAgentPlan({
+          workspace_id: workspaceId,
+          agent_id: effectiveAgentId,
+        })
+        if (!cancelled) {
+          setAgentPlan(nextPlan)
+        }
+      } catch (planError) {
+        if (!cancelled) {
+          setError(planError instanceof Error ? planError.message : 'Could not load agent plan.')
+        }
+      }
+    })()
+
+    return () => {
+      cancelled = true
+    }
+  }, [agentCatalog, selectedAgentId])
 
   function handleOnboardingTextChange(field: OnboardingTextField, value: string) {
     setOnboarding((current) => {
@@ -507,8 +547,19 @@ function App() {
             {
               workspace_id: workspaceId,
               message: prompt,
+              agent_id: selectedAgentId ?? agentCatalog?.recommended_agent_id ?? undefined,
             },
             {
+              onMeta(payload) {
+                if (payload.selected_agent_id) {
+                  setSelectedAgentId(payload.selected_agent_id)
+                }
+                if (payload.selected_agent_label) {
+                  setChatMeta(
+                    `${payload.selected_agent_label} streaming via ${payload.model ?? 'gpt-4o'}`,
+                  )
+                }
+              },
               onDelta(delta) {
                 setChatEntries((current) =>
                   current.map((entry, index) =>
@@ -526,7 +577,19 @@ function App() {
                       : entry,
                   ),
                 )
-                setChatMeta('GPT-4o streaming response complete')
+                setChatMeta('Agent response complete')
+                void (async () => {
+                  try {
+                    const nextPlan = await getAgentPlan({
+                      workspace_id: workspaceId,
+                      agent_id: selectedAgentId ?? agentCatalog?.recommended_agent_id ?? undefined,
+                      prompt,
+                    })
+                    setAgentPlan(nextPlan)
+                  } catch {
+                    return
+                  }
+                })()
               },
             },
           )
@@ -540,6 +603,24 @@ function App() {
   async function handleChatSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     await runPrompt(chatPrompt)
+  }
+
+  async function handleSelectAgent(agentId: AgentId) {
+    setSelectedAgentId(agentId)
+    setActiveTab('ai')
+    setError(null)
+
+    try {
+      const nextPlan = await getAgentPlan({
+        workspace_id: workspaceId,
+        agent_id: agentId,
+      })
+      setAgentPlan(nextPlan)
+      setChatMeta(`${nextPlan.selected_agent_label} loaded`)
+      setChatPrompt(nextPlan.next_actions[0] ?? defaultSuggestions[0])
+    } catch (agentError) {
+      setError(agentError instanceof Error ? agentError.message : 'Could not load agent.')
+    }
   }
 
   if (
@@ -802,12 +883,16 @@ function App() {
 
             <TabsContent value="ai" className="h-full">
               <AiPanel
+                agentCatalog={agentCatalog}
+                agentPlan={agentPlan}
                 chatEntries={chatEntries}
                 chatMeta={chatMeta}
                 chatPrompt={chatPrompt}
                 isChatPending={isChatPending}
+                selectedAgentId={selectedAgentId}
                 onPromptChange={setChatPrompt}
                 onPromptSubmit={handleChatSubmit}
+                onSelectAgent={handleSelectAgent}
                 onSuggestionClick={runPrompt}
               />
             </TabsContent>
@@ -849,10 +934,10 @@ function OverviewPanel({
             </div>
           </CardHeader>
           <CardContent className="flex flex-wrap gap-2">
-            {suggestions.map((suggestion) => (
+            {defaultSuggestions.map((suggestion) => (
               <Button
                 key={suggestion}
-                variant={suggestion === suggestions[0] ? 'default' : 'outline'}
+                variant={suggestion === defaultSuggestions[0] ? 'default' : 'outline'}
                 onClick={() => onRunPrompt(suggestion)}
               >
                 {suggestion}
@@ -967,67 +1052,172 @@ function OverviewPanel({
 }
 
 function AiPanel({
+  agentCatalog,
+  agentPlan,
   chatEntries,
   chatMeta,
   chatPrompt,
   isChatPending,
+  selectedAgentId,
   onPromptChange,
   onPromptSubmit,
+  onSelectAgent,
   onSuggestionClick,
 }: {
+  agentCatalog: AgentCatalog | null
+  agentPlan: AgentPlan | null
   chatEntries: ChatEntry[]
   chatMeta: string
   chatPrompt: string
   isChatPending: boolean
+  selectedAgentId: AgentId | null
   onPromptChange: (value: string) => void
   onPromptSubmit: (event: FormEvent<HTMLFormElement>) => Promise<void>
+  onSelectAgent: (agentId: AgentId) => Promise<void>
   onSuggestionClick: (prompt: string) => Promise<void>
 }) {
   const assistantEntry = chatEntries.find((entry) => entry.role === 'assistant')
+  const selectedAgent =
+    agentCatalog?.agents.find((agent) => agent.id === selectedAgentId) ??
+    agentCatalog?.agents.find((agent) => agent.id === agentCatalog.recommended_agent_id) ??
+    null
+  const prompts =
+    selectedAgent?.suggested_prompts.length && selectedAgent.suggested_prompts.length > 0
+      ? selectedAgent.suggested_prompts
+      : defaultSuggestions
 
   return (
-    <Card className="flex h-full flex-col shadow-none">
+    <div className="grid h-full grid-cols-[320px_minmax(0,1fr)] gap-4 overflow-hidden">
+      <Card className="flex h-full flex-col shadow-none">
+        <CardHeader>
+          <div>
+            <Badge variant="outline" className="mb-2">
+              Agents
+            </Badge>
+            <CardTitle>Specialists</CardTitle>
+            <CardDescription>
+              Pick the agent that should own the next outbound task.
+            </CardDescription>
+          </div>
+        </CardHeader>
+        <CardContent className="grid min-h-0 flex-1 gap-3 overflow-y-auto pr-1">
+          {agentCatalog?.agents.map((agent) => (
+            <button
+              key={agent.id}
+              className={`rounded-2xl border p-4 text-left transition ${
+                agent.id === selectedAgent?.id
+                  ? 'border-primary bg-primary/5'
+                  : 'border-border bg-secondary/20 hover:bg-secondary/40'
+              }`}
+              type="button"
+              onClick={() => void onSelectAgent(agent.id)}
+            >
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <p className="font-medium">{agent.label}</p>
+                  <p className="mt-1 text-xs text-muted-foreground">{agent.focus}</p>
+                </div>
+                <Badge
+                  variant={
+                    agent.status === 'ready'
+                      ? 'success'
+                      : agent.status === 'attention'
+                        ? 'warning'
+                        : 'outline'
+                  }
+                >
+                  {agent.status}
+                </Badge>
+              </div>
+              <p className="mt-3 text-sm text-muted-foreground">{agent.rationale}</p>
+            </button>
+          )) ?? null}
+        </CardContent>
+      </Card>
+
+      <Card className="flex h-full flex-col shadow-none">
       <CardHeader>
         <div>
           <Badge variant="outline" className="mb-2">
             PipeIQ AI
           </Badge>
-          <CardTitle>Your autonomous outbound operator</CardTitle>
+          <CardTitle>{selectedAgent?.label ?? 'Your autonomous outbound operator'}</CardTitle>
           <CardDescription>
             {chatMeta || 'Use the agent to inspect blockers, summarize readiness, or plan the next launch step.'}
           </CardDescription>
         </div>
       </CardHeader>
       <CardContent className="flex min-h-0 flex-1 flex-col">
-        {assistantEntry ? (
-          <div className="flex min-h-0 flex-1 flex-col gap-4">
-            <div className="rounded-2xl border border-border bg-secondary/40 p-4">
-              <p className="mb-2 text-sm font-medium">Latest prompt</p>
-              <p className="text-sm text-muted-foreground">{chatEntries.find((entry) => entry.role === 'user')?.content}</p>
+        <div className="grid min-h-0 flex-1 grid-cols-[0.92fr_1.08fr] gap-4">
+          <div className="flex min-h-0 flex-col gap-4">
+            <div className="rounded-2xl border border-border bg-secondary/30 p-4">
+              <p className="mb-2 text-sm font-medium">Current runbook</p>
+              <p className="text-sm text-muted-foreground">
+                {agentPlan?.summary ?? 'Loading current agent plan.'}
+              </p>
+              {agentPlan?.blockers.length ? (
+                <div className="mt-3 space-y-2">
+                  {agentPlan.blockers.slice(0, 3).map((blocker) => (
+                    <div key={blocker} className="rounded-xl border border-border bg-background px-3 py-2 text-sm text-muted-foreground">
+                      {blocker}
+                    </div>
+                  ))}
+                </div>
+              ) : null}
             </div>
-            <div className="min-h-0 flex-1 rounded-2xl border border-border bg-background p-4">
-              <p className="mb-2 text-sm font-medium">PipeIQ response</p>
-              <p className="whitespace-pre-wrap text-sm text-muted-foreground">{assistantEntry.content}</p>
-            </div>
-          </div>
-        ) : (
-          <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-6 rounded-2xl border border-dashed border-border bg-secondary/30">
-            <div className="flex h-16 w-16 items-center justify-center rounded-full bg-primary/10 text-primary">
-              <Bot className="h-7 w-7" />
-            </div>
-            <div className="text-center">
-              <h2 className="text-xl font-semibold">Ask PipeIQ anything</h2>
-              <p className="text-sm text-muted-foreground">A minimal desktop AI surface with no overflow-heavy layout.</p>
-            </div>
-            <div className="flex flex-wrap justify-center gap-2">
-              {suggestions.map((suggestion) => (
-                <Button key={suggestion} variant="outline" onClick={() => onSuggestionClick(suggestion)}>
-                  {suggestion}
-                </Button>
+
+            <div className="grid gap-3">
+              {(agentPlan?.sections ?? []).map((section) => (
+                <div key={section.title} className="rounded-2xl border border-border p-4">
+                  <p className="mb-2 text-sm font-medium">{section.title}</p>
+                  <div className="space-y-2">
+                    {section.bullets.map((bullet) => (
+                      <div key={bullet} className="text-sm text-muted-foreground">
+                        {bullet}
+                      </div>
+                    ))}
+                  </div>
+                </div>
               ))}
             </div>
           </div>
-        )}
+
+          {assistantEntry ? (
+            <div className="flex min-h-0 flex-1 flex-col gap-4">
+              <div className="rounded-2xl border border-border bg-secondary/40 p-4">
+                <p className="mb-2 text-sm font-medium">Latest prompt</p>
+                <p className="text-sm text-muted-foreground">
+                  {chatEntries.find((entry) => entry.role === 'user')?.content}
+                </p>
+              </div>
+              <div className="min-h-0 flex-1 rounded-2xl border border-border bg-background p-4">
+                <p className="mb-2 text-sm font-medium">PipeIQ response</p>
+                <p className="whitespace-pre-wrap text-sm text-muted-foreground">
+                  {assistantEntry.content}
+                </p>
+              </div>
+            </div>
+          ) : (
+            <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-6 rounded-2xl border border-dashed border-border bg-secondary/30">
+              <div className="flex h-16 w-16 items-center justify-center rounded-full bg-primary/10 text-primary">
+                <Bot className="h-7 w-7" />
+              </div>
+              <div className="text-center">
+                <h2 className="text-xl font-semibold">{selectedAgent?.label ?? 'Ask PipeIQ anything'}</h2>
+                <p className="text-sm text-muted-foreground">
+                  {selectedAgent?.description ?? 'A minimal desktop AI surface with no overflow-heavy layout.'}
+                </p>
+              </div>
+              <div className="flex flex-wrap justify-center gap-2">
+                {prompts.map((suggestion) => (
+                  <Button key={suggestion} variant="outline" onClick={() => onSuggestionClick(suggestion)}>
+                    {suggestion}
+                  </Button>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
 
         <form className="mt-4 grid grid-cols-[1fr_auto] gap-3" onSubmit={onPromptSubmit}>
           <Textarea
@@ -1041,7 +1231,8 @@ function AiPanel({
           </Button>
         </form>
       </CardContent>
-    </Card>
+      </Card>
+    </div>
   )
 }
 
