@@ -113,16 +113,25 @@ export class OutreachSmtpPool {
     return null  // all inboxes exhausted
   }
 
-  /** Send an email via the next available inbox, recording the send */
-  async send(
+  /**
+   * Pick a specific inbox by ID (for sticky inbox assignment).
+   * Falls back to round-robin if the requested inbox is full or not in the pool.
+   */
+  pickById(inboxId: string): { transporter: Transporter; inbox: WarmingInbox } | null {
+    const entry = this.entries.find((e) => e.inbox.id === inboxId && e.sentToday < e.dailyCap)
+    if (entry) return { transporter: entry.transporter, inbox: entry.inbox }
+    return this.next()  // fall back to round-robin
+  }
+
+  /**
+   * Send using a pick already obtained from next() or pickById().
+   * This avoids the double-pick bug where next() + send() each advance the cursor.
+   */
+  async sendWith(
+    pick: { transporter: Transporter; inbox: WarmingInbox },
     options: Omit<SendMailOptions, 'from'>,
     workspaceId: string,
   ): Promise<{ ok: boolean; from: string; messageId?: string; error?: string }> {
-    const pick = this.next()
-    if (!pick) {
-      return { ok: false, from: '', error: 'No available inboxes — daily capacity reached' }
-    }
-
     const { transporter, inbox } = pick
     const fromName = inbox.display_name ?? inbox.email
 
@@ -171,6 +180,18 @@ export class OutreachSmtpPool {
 
       return { ok: false, from: inbox.email, error: msg }
     }
+  }
+
+  /** Send an email via the next available inbox, recording the send */
+  async send(
+    options: Omit<SendMailOptions, 'from'>,
+    workspaceId: string,
+  ): Promise<{ ok: boolean; from: string; messageId?: string; error?: string }> {
+    const pick = this.next()
+    if (!pick) {
+      return { ok: false, from: '', error: 'No available inboxes — daily capacity reached' }
+    }
+    return this.sendWith(pick, options, workspaceId)
   }
 
   /** Release all transporter connections */
