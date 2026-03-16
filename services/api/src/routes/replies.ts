@@ -159,6 +159,12 @@ repliesRoutes.post('/api/replies/:replyId/decision', async (c) => {
     const result = store.decideReply(workspaceId, replyId, decisionToApply)
     await store.persistWorkspace(workspaceId, c.get('orgId'))
 
+    // Stop any active sequence enrollments for this contact — they replied
+    if (reply.contact_id) {
+      const { unenrollOnReply } = await import('../lib/sequencing.js')
+      await unenrollOnReply(reply.contact_id, workspaceId).catch(() => {/* non-blocking */})
+    }
+
     // Emit adaptive signal when a human corrects the AI's classification
     if (
       payload.corrected_classification &&

@@ -37,6 +37,19 @@ import type {
   WarmingOverview,
   WarmingInboxStats,
   WarmingRunResult,
+  // Sequences
+  Sequence,
+  SequenceStep,
+  SequenceEnrollment,
+  SequenceEnrollmentWithContact,
+  SequenceSummary,
+  SequenceWithSteps,
+  SequenceStats,
+  SequenceCreateRequest,
+  SequenceUpdateRequest,
+  SequenceStepUpdateRequest,
+  SequenceEnrollRequest,
+  SequenceTickResult,
 } from '@pipeiq/shared'
 
 export type {
@@ -69,6 +82,19 @@ export type {
   ProspectRunSummary,
   ReplyQueueItem,
   WorkspaceSummary,
+  // Sequences
+  Sequence,
+  SequenceStep,
+  SequenceEnrollment,
+  SequenceEnrollmentWithContact,
+  SequenceSummary,
+  SequenceWithSteps,
+  SequenceStats,
+  SequenceCreateRequest,
+  SequenceUpdateRequest,
+  SequenceStepUpdateRequest,
+  SequenceEnrollRequest,
+  SequenceTickResult,
 }
 
 const apiUrl = import.meta.env.VITE_API_URL ?? 'http://localhost:8000'
@@ -480,4 +506,95 @@ export function testWarmingCredentials(
     `/api/warming/${workspaceId}/test-credentials`,
     { method: 'POST', body: JSON.stringify(payload) },
   )
+}
+
+// ─── Email Sequences ───────────────────────────────────────────────────────────
+
+export function getSequences(workspaceId: string = storedWorkspaceId() ?? '') {
+  return request<SequenceSummary[]>(`/api/sequences/${workspaceId}`)
+}
+
+export function getSequence(workspaceId: string, sequenceId: string) {
+  return request<SequenceWithSteps>(`/api/sequences/${workspaceId}/${sequenceId}`)
+}
+
+export function createSequence(workspaceId: string, payload: SequenceCreateRequest) {
+  return request<SequenceWithSteps>(`/api/sequences/${workspaceId}`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function updateSequence(workspaceId: string, sequenceId: string, payload: SequenceUpdateRequest) {
+  return request<Sequence>(`/api/sequences/${workspaceId}/${sequenceId}`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function deleteSequence(workspaceId: string, sequenceId: string) {
+  return request<{ ok: boolean }>(`/api/sequences/${workspaceId}/${sequenceId}`, {
+    method: 'DELETE',
+  })
+}
+
+export function addSequenceStep(
+  workspaceId: string,
+  sequenceId: string,
+  payload: Omit<SequenceStepUpdateRequest, never> & { step_type?: 'icebreaker' | 'follow_up' | 'breakup' },
+) {
+  return request<SequenceStep>(`/api/sequences/${workspaceId}/${sequenceId}/steps`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function updateSequenceStep(
+  workspaceId: string,
+  sequenceId: string,
+  stepId: string,
+  payload: SequenceStepUpdateRequest,
+) {
+  return request<SequenceStep>(`/api/sequences/${workspaceId}/${sequenceId}/steps/${stepId}`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function deleteSequenceStep(workspaceId: string, sequenceId: string, stepId: string) {
+  return request<{ ok: boolean }>(
+    `/api/sequences/${workspaceId}/${sequenceId}/steps/${stepId}`,
+    { method: 'DELETE' },
+  )
+}
+
+export function enrollInSequence(workspaceId: string, sequenceId: string, contactIds: string[]) {
+  return request<{ enrolled: number; skipped: number }>(
+    `/api/sequences/${workspaceId}/${sequenceId}/enroll`,
+    { method: 'POST', body: JSON.stringify({ contact_ids: contactIds }) },
+  )
+}
+
+export function getSequenceEnrollments(workspaceId: string, sequenceId: string) {
+  return request<SequenceEnrollmentWithContact[]>(
+    `/api/sequences/${workspaceId}/${sequenceId}/enrollments`,
+  )
+}
+
+export function pauseEnrollment(workspaceId: string, sequenceId: string, enrollmentId: string) {
+  return request<{ ok: boolean }>(
+    `/api/sequences/${workspaceId}/${sequenceId}/enrollments/${enrollmentId}/pause`,
+    { method: 'POST' },
+  )
+}
+
+export function resumeEnrollment(workspaceId: string, sequenceId: string, enrollmentId: string) {
+  return request<{ ok: boolean }>(
+    `/api/sequences/${workspaceId}/${sequenceId}/enrollments/${enrollmentId}/resume`,
+    { method: 'POST' },
+  )
+}
+
+export function triggerSequenceTick(workspaceId: string = storedWorkspaceId() ?? '') {
+  return request<SequenceTickResult>(`/api/sequences/${workspaceId}/tick`, { method: 'POST' })
 }

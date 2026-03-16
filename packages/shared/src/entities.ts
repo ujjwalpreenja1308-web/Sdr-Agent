@@ -195,6 +195,60 @@ export interface AuditLog {
   created_at: string
 }
 
+// ─── Email Sequencing ─────────────────────────────────────────────────────────
+
+export type SequenceStatus = 'draft' | 'active' | 'archived' | string
+export type SequenceStepType = 'icebreaker' | 'follow_up' | 'breakup' | string
+export type EnrollmentStatus = 'active' | 'paused' | 'completed' | 'replied' | 'bounced' | 'unsubscribed' | string
+
+export interface Sequence {
+  id: string
+  workspace_id: string
+  name: string
+  description: string | null
+  status: SequenceStatus
+  created_at: string
+  updated_at: string
+}
+
+export interface SequenceStep {
+  id: string
+  sequence_id: string
+  position: number        // 0 = icebreaker/first email
+  step_type: SequenceStepType
+  delay_days: number      // days after the previous step (ignored for position 0)
+  subject_template: string
+  body_template: string
+  created_at: string
+}
+
+export interface SequenceEnrollment {
+  id: string
+  sequence_id: string
+  contact_id: string
+  workspace_id: string
+  status: EnrollmentStatus
+  current_step: number    // index of next step to send
+  enrolled_at: string
+  next_send_at: string | null
+  completed_at: string | null
+}
+
+export interface SequenceSendLog {
+  id: string
+  enrollment_id: string
+  step_id: string
+  contact_id: string
+  inbox_id: string | null
+  workspace_id: string
+  message_id: string | null
+  subject: string | null
+  from_email: string | null
+  status: 'sent' | 'bounced' | 'failed' | string
+  error: string | null
+  sent_at: string
+}
+
 // ─── Deliverability / Email Warming ──────────────────────────────────────────
 
 export type WarmingInboxStatus = 'active' | 'paused' | 'error' | string

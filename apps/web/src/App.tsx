@@ -16,6 +16,7 @@ import { ApprovalCard } from './components/approval-card'
 import { CompanyProfilePanel } from './components/company-profile-panel'
 import { IntegrationsPanel } from './components/integrations-panel'
 import { WarmingPanel } from './components/warming-panel'
+import { SequencePanel } from './components/sequence-panel'
 import { LaunchControlRoom } from './components/launch-control-room'
 import { MeetingsPanel } from './components/meetings-panel'
 import { ProspectsPanel } from './components/prospects-panel'
@@ -798,7 +799,7 @@ function App() {
   )
 }
 
-type OutreachTab = 'prospects' | 'approvals' | 'pipeline' | 'replies' | 'meetings'
+type OutreachTab = 'prospects' | 'approvals' | 'pipeline' | 'sequences' | 'replies' | 'meetings'
 
 function OutreachPanel({
   approvals, busyApprovalId, busyReplyId, busyToolkit, campaign, generating,
@@ -845,6 +846,7 @@ function OutreachPanel({
   const subNav: { value: OutreachTab; label: string; badge?: number }[] = [
     { value: 'prospects', label: 'Prospects' },
     { value: 'pipeline', label: 'Pipeline' },
+    { value: 'sequences', label: 'Sequences' },
     { value: 'approvals', label: 'Approvals', badge: pendingApprovals.length || undefined },
     { value: 'replies', label: 'Replies', badge: pendingReplies.length || undefined },
     { value: 'meetings', label: 'Meetings' },
@@ -930,6 +932,9 @@ function OutreachPanel({
             onDecision={onReplyDecision}
             onRegisterWebhook={onRegisterWebhook}
           />
+        )}
+        {subTab === 'sequences' && (
+          <SequencePanel workspaceId={pipeline.workspace_id} pipeline={pipeline} />
         )}
         {subTab === 'meetings' && (
           <MeetingsPanel campaign={campaign} meetings={meetings} />

@@ -531,6 +531,76 @@ export interface ReplyDecisionRequestExtended extends ReplyDecisionRequest {
   rejection_note?: string
 }
 
+// ─── Email Sequencing ─────────────────────────────────────────────────────────
+
+import type { Sequence, SequenceStep, SequenceEnrollment, SequenceSendLog } from './entities.js'
+
+export type { Sequence, SequenceStep, SequenceEnrollment, SequenceSendLog }
+
+export interface SequenceStepInput {
+  step_type: 'icebreaker' | 'follow_up' | 'breakup'
+  delay_days: number
+  subject_template: string
+  body_template: string
+}
+
+export interface SequenceCreateRequest {
+  name: string
+  description?: string
+  steps: SequenceStepInput[]
+}
+
+export interface SequenceUpdateRequest {
+  name?: string
+  description?: string
+  status?: 'draft' | 'active' | 'archived'
+}
+
+export interface SequenceStepUpdateRequest {
+  step_type?: 'icebreaker' | 'follow_up' | 'breakup'
+  delay_days?: number
+  subject_template?: string
+  body_template?: string
+}
+
+export interface SequenceEnrollRequest {
+  contact_ids: string[]
+}
+
+export interface SequenceWithSteps extends Sequence {
+  steps: SequenceStep[]
+}
+
+export interface SequenceEnrollmentWithContact extends SequenceEnrollment {
+  contact_email: string
+  contact_name: string
+  contact_company: string
+}
+
+export interface SequenceStats {
+  sequence_id: string
+  total_enrolled: number
+  active: number
+  completed: number
+  replied: number
+  bounced: number
+  total_sent: number
+  open_rate: number  // placeholder – filled when open-tracking available
+}
+
+export interface SequenceSummary extends Sequence {
+  step_count: number
+  stats: SequenceStats
+}
+
+export interface SequenceTickResult {
+  workspace_id: string
+  triggered_at: string
+  emails_sent: number
+  enrollments_completed: number
+  errors: string[]
+}
+
 // ─── Deliverability / Email Warming ──────────────────────────────────────────
 
 /** Inbox summary sent to the frontend (passwords stripped) */

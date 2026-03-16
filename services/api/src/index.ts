@@ -19,6 +19,7 @@ import { leadsRoutes } from './routes/leads.js'
 import { observabilityRoutes } from './routes/observability.js'
 import { repliesRoutes } from './routes/replies.js'
 import { warmingRoutes } from './routes/warming.js'
+import { sequenceRoutes } from './routes/sequences.js'
 import { webhooksRoutes } from './routes/webhooks.js'
 import { workspacesRoutes } from './routes/workspaces.js'
 import type { AppEnv } from './types.js'
@@ -39,6 +40,26 @@ export function createApp(): Hono<AppEnv> {
 
   app.get('/health', (c) => c.json({ status: 'ok' }))
   app.route('/', webhooksRoutes)
+
+  // Internal cron: DigitalOcean calls this hourly to advance email sequences
+  app.post('/internal/sequences/tick-all', async (c) => {
+    const secret = c.req.header('x-cron-secret')
+    if (!secret || secret !== env.warmingCronSecret) {
+      return c.json({ error: 'Unauthorized' }, 401)
+    }
+    const { runSequenceTick } = await import('./lib/sequencing.js')
+    const { getSupabaseAdmin } = await import('./lib/supabase.js')
+    const db = getSupabaseAdmin()
+    const { data: workspaces } = await db.from('workspaces').select('id')
+    if (!workspaces) return c.json({ ok: true, processed: 0 })
+    const results = await Promise.allSettled(
+      workspaces.map((w: { id: string }) => runSequenceTick(w.id)),
+    )
+    const summaries = results.map((r) =>
+      r.status === 'fulfilled' ? r.value : { error: String(r.reason) },
+    )
+    return c.json({ ok: true, processed: workspaces.length, summaries })
+  })
 
   // Internal cron: DigitalOcean calls this daily at 08:00 UTC
   // Authenticated by shared secret header (no JWT required)
@@ -76,6 +97,7 @@ export function createApp(): Hono<AppEnv> {
   app.route('/', bandwidthRoutes)
   app.route('/', observabilityRoutes)
   app.route('/', warmingRoutes)
+  app.route('/', sequenceRoutes)
 
   return app
 }
