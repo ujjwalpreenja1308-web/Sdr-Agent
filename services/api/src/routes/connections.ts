@@ -1,9 +1,7 @@
 import { Hono } from 'hono'
 
 import type {
-  ApiKeyConnectionRequest,
   IntegrationCheckResult,
-  OAuthConnectionRequest,
 } from '@pipeiq/shared'
 
 import { getApolloConnectionHealth, validateApolloApiKey } from '../lib/apollo.js'
@@ -16,6 +14,11 @@ import {
   storeWorkspaceApiKey,
   updateWorkspaceComposioEntity,
 } from '../lib/supabase.js'
+import {
+  validateBody,
+  oauthConnectionSchema,
+  apiKeyConnectionSchema,
+} from '../lib/validation.js'
 import type { AppEnv } from '../types.js'
 
 export const connectionsRoutes = new Hono<AppEnv>()
@@ -25,7 +28,7 @@ function composioUserId(workspaceId: string, orgId: string): string {
 }
 
 connectionsRoutes.post('/connections/initiate', async (c) => {
-  const payload = await c.req.json<OAuthConnectionRequest>()
+  const payload = await validateBody(c, oauthConnectionSchema)
   const orgId = c.get('orgId')
   const workspace = await ensureWorkspaceRecord(payload.workspace_id, orgId)
   const store = getRuntimeStore()
@@ -161,7 +164,7 @@ connectionsRoutes.get('/connections/status/:connectionId', async (c) => {
 })
 
 connectionsRoutes.post('/api/connections/authorize', async (c) => {
-  const payload = await c.req.json<OAuthConnectionRequest>()
+  const payload = await validateBody(c, oauthConnectionSchema)
   const orgId = c.get('orgId')
   const workspace = await ensureWorkspaceRecord(payload.workspace_id, orgId)
   const store = getRuntimeStore()
@@ -296,7 +299,7 @@ connectionsRoutes.get('/api/connections/:connectionId', async (c) => {
 })
 
 connectionsRoutes.post('/api/connections/api-key', async (c) => {
-  const payload = await c.req.json<ApiKeyConnectionRequest>()
+  const payload = await validateBody(c, apiKeyConnectionSchema)
   await ensureWorkspaceRecord(payload.workspace_id, c.get('orgId'))
   const store = getRuntimeStore()
   await store.hydrateWorkspace(payload.workspace_id, c.get('orgId'))

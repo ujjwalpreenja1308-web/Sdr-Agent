@@ -9,8 +9,15 @@ import {
   DEFAULT_STEP_TEMPLATES,
 } from '../lib/sequencing.js'
 import { getSupabaseAdmin } from '../lib/supabase.js'
+import {
+  validateBody,
+  sequenceCreateSchema,
+  sequenceUpdateSchema,
+  stepCreateSchema,
+  stepUpdateSchema,
+  enrollRequestSchema,
+} from '../lib/validation.js'
 import type { AppEnv } from '../types.js'
-import type { SequenceCreateRequest, SequenceUpdateRequest, SequenceStepUpdateRequest, SequenceEnrollRequest } from '@pipeiq/shared'
 
 export const sequenceRoutes = new Hono<AppEnv>()
 
@@ -28,11 +35,7 @@ sequenceRoutes.get('/api/sequences/:workspaceId', async (c) => {
 
 sequenceRoutes.post('/api/sequences/:workspaceId', async (c) => {
   const { workspaceId } = c.req.param()
-  const body = await c.req.json<SequenceCreateRequest>()
-
-  if (!body.name?.trim()) {
-    return c.json({ error: 'name is required' }, 400)
-  }
+  const body = await validateBody(c, sequenceCreateSchema)
 
   const db = getSupabaseAdmin()
   const { data: seq, error: seqErr } = await db
@@ -48,7 +51,7 @@ sequenceRoutes.post('/api/sequences/:workspaceId', async (c) => {
 
   if (seqErr || !seq) return c.json({ error: seqErr?.message ?? 'Insert failed' }, 500)
 
-  // Insert steps if provided
+  // Insert steps if provided — rollback the sequence if steps fail
   if (body.steps && body.steps.length > 0) {
     const stepRows = body.steps.map((s, i) => ({
       sequence_id: seq.id,
@@ -59,7 +62,11 @@ sequenceRoutes.post('/api/sequences/:workspaceId', async (c) => {
       body_template: s.body_template,
     }))
     const { error: stepsErr } = await db.from('sequence_steps').insert(stepRows)
-    if (stepsErr) return c.json({ error: stepsErr.message }, 500)
+    if (stepsErr) {
+      // Rollback: delete the orphaned sequence
+      await db.from('sequences').delete().eq('id', seq.id)
+      return c.json({ error: `Failed to create steps: ${stepsErr.message}` }, 500)
+    }
   }
 
   const result = await getSequenceWithSteps(seq.id, workspaceId)
@@ -81,7 +88,7 @@ sequenceRoutes.get('/api/sequences/:workspaceId/:sequenceId', async (c) => {
 
 sequenceRoutes.patch('/api/sequences/:workspaceId/:sequenceId', async (c) => {
   const { workspaceId, sequenceId } = c.req.param()
-  const body = await c.req.json<SequenceUpdateRequest>()
+  const body = await validateBody(c, sequenceUpdateSchema)
 
   const db = getSupabaseAdmin()
   const updates: Record<string, unknown> = { updated_at: new Date().toISOString() }
@@ -120,12 +127,7 @@ sequenceRoutes.delete('/api/sequences/:workspaceId/:sequenceId', async (c) => {
 
 sequenceRoutes.post('/api/sequences/:workspaceId/:sequenceId/steps', async (c) => {
   const { workspaceId, sequenceId } = c.req.param()
-  const body = await c.req.json<{
-    step_type?: 'icebreaker' | 'follow_up' | 'breakup'
-    delay_days?: number
-    subject_template?: string
-    body_template?: string
-  }>()
+  const body = await validateBody(c, stepCreateSchema)
 
   // Verify ownership
   const db = getSupabaseAdmin()
@@ -173,7 +175,7 @@ sequenceRoutes.post('/api/sequences/:workspaceId/:sequenceId/steps', async (c) =
 
 sequenceRoutes.patch('/api/sequences/:workspaceId/:sequenceId/steps/:stepId', async (c) => {
   const { workspaceId, sequenceId, stepId } = c.req.param()
-  const body = await c.req.json<SequenceStepUpdateRequest>()
+  const body = await validateBody(c, stepUpdateSchema)
 
   const db = getSupabaseAdmin()
 
@@ -235,7 +237,7 @@ sequenceRoutes.delete('/api/sequences/:workspaceId/:sequenceId/steps/:stepId', a
 
   if (remaining) {
     for (let i = 0; i < remaining.length; i++) {
-      await db.from('sequence_steps').update({ position: i }).eq('id', remaining[i].id)
+      await db.from('sequence_steps').update({ position: i }).eq('id', remaining[i]!.id)
     }
   }
 
@@ -247,11 +249,7 @@ sequenceRoutes.delete('/api/sequences/:workspaceId/:sequenceId/steps/:stepId', a
 
 sequenceRoutes.post('/api/sequences/:workspaceId/:sequenceId/enroll', async (c) => {
   const { workspaceId, sequenceId } = c.req.param()
-  const body = await c.req.json<SequenceEnrollRequest>()
-
-  if (!Array.isArray(body.contact_ids) || body.contact_ids.length === 0) {
-    return c.json({ error: 'contact_ids array is required' }, 400)
-  }
+  const body = await validateBody(c, enrollRequestSchema)
 
   // Verify sequence belongs to workspace
   const db = getSupabaseAdmin()
@@ -300,13 +298,22 @@ sequenceRoutes.post(
   async (c) => {
     const { workspaceId, enrollmentId } = c.req.param()
     const db = getSupabaseAdmin()
-    const { error } = await db
+
+    // Resume with a minimum 1-hour delay to avoid sending immediately after un-pause
+    // (preserves the intent of step spacing rather than firing instantly)
+    const resumeSendAt = new Date(Date.now() + 60 * 60 * 1000).toISOString()
+
+    const { data, error } = await db
       .from('sequence_enrollments')
-      .update({ status: 'active', next_send_at: null })
+      .update({ status: 'active', next_send_at: resumeSendAt })
       .eq('id', enrollmentId)
       .eq('workspace_id', workspaceId)
+      .eq('status', 'paused')
+      .select('id')
+
     if (error) return c.json({ error: error.message }, 500)
-    return c.json({ ok: true })
+    if (!data || data.length === 0) return c.json({ error: 'Enrollment not found or not paused' }, 404)
+    return c.json({ ok: true, next_send_at: resumeSendAt })
   },
 )
 

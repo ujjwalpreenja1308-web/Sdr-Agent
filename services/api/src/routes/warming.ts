@@ -10,6 +10,12 @@ import {
 } from '../lib/warming.js'
 import { encrypt } from '../lib/encryption.js'
 import { getSupabaseAdmin } from '../lib/supabase.js'
+import {
+  validateBody,
+  inboxCreateSchema,
+  inboxUpdateSchema,
+  testCredentialsSchema,
+} from '../lib/validation.js'
 import type { AppEnv } from '../types.js'
 
 export const warmingRoutes = new Hono<AppEnv>()
@@ -29,27 +35,23 @@ warmingRoutes.get('/api/warming/:workspaceId', async (c) => {
 
 warmingRoutes.post('/api/warming/:workspaceId/inboxes', async (c) => {
   const { workspaceId } = c.req.param()
-  const body = await c.req.json()
+  const body = await validateBody(c, inboxCreateSchema)
 
   const {
     email,
     display_name,
     smtp_host,
-    smtp_port = 587,
+    smtp_port,
     smtp_user,
     smtp_pass,
-    smtp_secure = false,
+    smtp_secure,
     imap_host,
-    imap_port = 993,
+    imap_port,
     imap_user,
     imap_pass,
-    daily_target = 30,
-    use_for_outreach = false,
+    daily_target,
+    use_for_outreach,
   } = body
-
-  if (!email || !smtp_host || !smtp_user || !smtp_pass || !imap_host || !imap_user || !imap_pass) {
-    return c.json({ error: 'Missing required fields' }, 400)
-  }
 
   // Test connections before saving
   const smtpTest = await testSmtpConnection(smtp_host, smtp_port, smtp_user, smtp_pass, smtp_secure)
@@ -100,7 +102,7 @@ warmingRoutes.post('/api/warming/:workspaceId/inboxes', async (c) => {
 
 warmingRoutes.patch('/api/warming/:workspaceId/inboxes/:inboxId', async (c) => {
   const { workspaceId, inboxId } = c.req.param()
-  const body = await c.req.json()
+  const body = await validateBody(c, inboxUpdateSchema)
 
   const db = getSupabaseAdmin()
 
@@ -202,10 +204,10 @@ warmingRoutes.post('/api/warming/:workspaceId/run', async (c) => {
 // Test SMTP + IMAP credentials without saving
 
 warmingRoutes.post('/api/warming/:workspaceId/test-credentials', async (c) => {
-  const body = await c.req.json()
+  const body = await validateBody(c, testCredentialsSchema)
   const {
-    smtp_host, smtp_port = 587, smtp_user, smtp_pass, smtp_secure = false,
-    imap_host, imap_port = 993, imap_user, imap_pass,
+    smtp_host, smtp_port, smtp_user, smtp_pass, smtp_secure,
+    imap_host, imap_port, imap_user, imap_pass,
   } = body
 
   const [smtpResult, imapResult] = await Promise.all([

@@ -1,19 +1,16 @@
-import { useCallback, useEffect, useMemo, useState, useTransition, type FormEvent } from 'react'
 import {
-  Activity,
-  Bot,
-  Cable,
-  CircleDot,
-  Cpu,
-  Home,
-  Send,
-  Settings,
-  Sparkles,
-  Zap,
+  useCallback, useEffect, useMemo, useRef, useState, useTransition,
+  type FormEvent,
+} from 'react'
+import {
+  BarChart2, Bot, ChevronLeft, ChevronRight, Cpu,
+  Hash, Home, Inbox, Layers, LogOut, MessageSquare,
+  PanelRightOpen, Plus, Settings, Sparkles, Users, Zap,
+  BookOpen, Building2, Flame,
 } from 'lucide-react'
 
-import { ApprovalCard } from './components/approval-card'
 import { CompanyProfilePanel } from './components/company-profile-panel'
+import { PlaybooksPanel } from './components/playbooks-panel'
 import { IntegrationsPanel } from './components/integrations-panel'
 import { WarmingPanel } from './components/warming-panel'
 import { SequencePanel } from './components/sequence-panel'
@@ -21,79 +18,55 @@ import { LaunchControlRoom } from './components/launch-control-room'
 import { MeetingsPanel } from './components/meetings-panel'
 import { ProspectsPanel } from './components/prospects-panel'
 import { RepliesPanel } from './components/replies-panel'
+import { AnimatedOnboarding } from './components/animated-onboarding'
 import { Badge } from './components/ui/badge'
 import { Button } from './components/ui/button'
-import { Tabs, TabsContent, TabsList, TabsTrigger } from './components/ui/tabs'
-import { Textarea } from './components/ui/textarea'
 import {
-  getAuthSession,
-  getAgentCatalog,
-  checkIntegration,
-  decideApproval,
-  decideReply,
-  generatePipeline,
-  getActivity,
-  getApprovals,
-  getCampaign,
-  getInstantlyWebhook,
-  getLaunchReadiness,
-  getMeetings,
-  getOnboarding,
-  getPipeline,
-  getProspectRun,
-  getReplies,
-  getWorkspace,
-  launchOauthConnection,
-  pollConnection,
-  registerInstantlyWebhook,
-  runProspectSearch,
-  saveApiKeyConnection,
-  saveWorkspaceId,
-  stageLaunch,
-  streamChatWithAgent,
-  updateOnboarding,
-  verifyProspectEmails,
-  type AgentCatalog,
-  type AgentId,
-  type ApprovalItem,
-  type AuthSession,
-  type CampaignSummary,
-  type InstantlyWebhookSubscription,
-  type IntegrationCheckResult,
-  type LaunchReadiness,
-  type MeetingPrepItem,
-  type OnboardingProfile,
-  type OperatorEvent,
-  type PipelineSnapshot,
-  type ProspectRunSummary,
-  type ReplyQueueItem,
-  type WorkspaceSummary,
+  getAuthSession, getAgentCatalog, checkIntegration, decideApproval, decideReply,
+  generatePipeline, getActivity, getApprovals, getCampaign, getInstantlyWebhook,
+  getLaunchReadiness, getMeetings, getOnboarding, getPipeline, getProspectRun,
+  getReplies, getWorkspace, launchOauthConnection, pollConnection,
+  registerInstantlyWebhook, runProspectSearch, saveApiKeyConnection, saveWorkspaceId,
+  stageLaunch, streamChatWithAgent, updateOnboarding, verifyProspectEmails,
+  type AgentCatalog, type AgentId, type ApprovalItem, type AuthSession,
+  type CampaignSummary, type InstantlyWebhookSubscription, type IntegrationCheckResult,
+  type LaunchReadiness, type MeetingPrepItem, type OnboardingProfile, type OperatorEvent,
+  type PipelineSnapshot, type ProspectRunSummary, type ReplyQueueItem, type WorkspaceSummary,
 } from './lib/api'
-import {
-  calculateOnboardingProgress,
-  csvToList,
-  type OnboardingListField,
-  type OnboardingTextField,
-} from './lib/onboarding'
+import { calculateOnboardingProgress, csvToList, type OnboardingListField, type OnboardingTextField } from './lib/onboarding'
 
 const apiBaseUrl = import.meta.env.VITE_API_URL ?? 'http://localhost:8000'
-const defaultSuggestions = [
-  'Show blockers to first launch',
-  'Summarize approvals waiting today',
-  'What should I connect next?',
-]
 
-type AppTab =
-  | 'onboarding'
-  | 'overview'
-  | 'integrations'
-  | 'warming'
-  | 'pipeline'
+// ─── Types ────────────────────────────────────────────────────────────────────
+
+type AppView =
   | 'ai'
+  | 'analytics'
+  | 'company-profile'
+  | 'company-playbooks'
+  | 'campaigns'
+  | 'sequences'
+  | 'inbox'
+  | 'integrations'
+  | 'warmup'
+  | 'settings'
+
 type ChatEntry = {
+  id: string
   role: 'user' | 'assistant'
   content: string
+  timestamp: Date
+  approvals?: ApprovalItem[]
 }
+
+type ConvoSummary = {
+  id: string
+  title: string
+  preview: string
+  timestamp: Date
+}
+
+// ─── Main App ────────────────────────────────────────────────────────────────
 
 function App() {
   const [session, setSession] = useState<AuthSession | null>(null)
@@ -105,24 +78,33 @@ function App() {
   const [launchReadiness, setLaunchReadiness] = useState<LaunchReadiness | null>(null)
   const [campaign, setCampaign] = useState<CampaignSummary | null>(null)
   const [instantlyWebhook, setInstantlyWebhook] = useState<InstantlyWebhookSubscription | null>(null)
-  const [integrationChecks, setIntegrationChecks] = useState<
-    Record<string, IntegrationCheckResult | undefined>
-  >({})
+  const [integrationChecks, setIntegrationChecks] = useState<Record<string, IntegrationCheckResult | undefined>>({})
   const [replies, setReplies] = useState<ReplyQueueItem[]>([])
   const [meetings, setMeetings] = useState<MeetingPrepItem[]>([])
   const [approvals, setApprovals] = useState<ApprovalItem[]>([])
   const [activity, setActivity] = useState<OperatorEvent[]>([])
-  const [activeTab, setActiveTab] = useState<AppTab>('onboarding')
-  const [chatPrompt, setChatPrompt] = useState('Show blockers to first launch')
+
+  // UI state
+  const [activeView, setActiveView] = useState<AppView>('ai')
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
+  const [pastConvosOpen, setPastConvosOpen] = useState(false)
+  const [showOnboarding, setShowOnboarding] = useState(false)
+  const [hasInitialized, setHasInitialized] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  // Chat state
   const [chatEntries, setChatEntries] = useState<ChatEntry[]>([])
+  const [chatInput, setChatInput] = useState('')
   const [chatMeta, setChatMeta] = useState('')
   const [agentCatalog, setAgentCatalog] = useState<AgentCatalog | null>(null)
   const [selectedAgentId, setSelectedAgentId] = useState<AgentId | null>(null)
-  const [error, setError] = useState<string | null>(null)
+  const [pastConvos] = useState<ConvoSummary[]>([])
+  const chatBottomRef = useRef<HTMLDivElement>(null)
+
+  // Loading states
   const [busyToolkit, setBusyToolkit] = useState<string | null>(null)
   const [busyApprovalId, setBusyApprovalId] = useState<string | null>(null)
   const [busyReplyId, setBusyReplyId] = useState<string | null>(null)
-  const [hasInitialized, setHasInitialized] = useState(false)
   const [isChatPending, startChatTransition] = useTransition()
   const [isSavingOnboarding, startOnboardingTransition] = useTransition()
   const [isGeneratingPipeline, startPipelineTransition] = useTransition()
@@ -130,59 +112,34 @@ function App() {
   const [isVerifyingProspects, startVerificationTransition] = useTransition()
   const [isLaunchingCampaign, startLaunchTransition] = useTransition()
   const [isRegisteringWebhook, startWebhookTransition] = useTransition()
+
   const activeWorkspaceId = session?.workspace_id ?? null
   const activeUserId = session?.user_id ?? null
 
-  const pendingApprovals = useMemo(
-    () => approvals.filter((approval) => approval.status === 'pending'),
-    [approvals],
-  )
-
-  const pendingReplies = useMemo(
-    () => replies.filter((reply) => reply.status === 'pending'),
-    [replies],
-  )
+  const pendingApprovals = useMemo(() => approvals.filter((a) => a.status === 'pending'), [approvals])
+  const pendingReplies = useMemo(() => replies.filter((r) => r.status === 'pending'), [replies])
 
   const onboardingDirty = useMemo(() => {
-    if (!onboarding) {
-      return false
-    }
+    if (!onboarding) return false
     return JSON.stringify(onboarding) !== savedOnboardingSnapshot
   }, [onboarding, savedOnboardingSnapshot])
 
+  // ── Data loading ──────────────────────────────────────────────────────────
+
   const refreshSession = useCallback(async () => {
     const nextSession = await getAuthSession()
-    const storedWorkspaceId = typeof window !== 'undefined'
-      ? window.localStorage.getItem('pipeiq_workspace_id')
-      : null
-    const resolvedWorkspaceId =
-      storedWorkspaceId &&
-      nextSession.workspaces.some((workspaceOption) => workspaceOption.id === storedWorkspaceId)
-        ? storedWorkspaceId
-        : nextSession.workspace_id
-    const sessionWithWorkspace = {
-      ...nextSession,
-      workspace_id: resolvedWorkspaceId,
-    }
-    setSession((current) => {
-      if (
-        current?.workspace_id === sessionWithWorkspace.workspace_id &&
-        current.user_id === sessionWithWorkspace.user_id
-      ) {
-        return current
-      }
-      return sessionWithWorkspace
-    })
-    saveWorkspaceId(sessionWithWorkspace.workspace_id)
-    return sessionWithWorkspace
+    const storedId = typeof window !== 'undefined' ? window.localStorage.getItem('pipeiq_workspace_id') : null
+    const resolvedId = storedId && nextSession.workspaces.some((w) => w.id === storedId)
+      ? storedId : nextSession.workspace_id
+    const s = { ...nextSession, workspace_id: resolvedId }
+    setSession((cur) => cur?.workspace_id === s.workspace_id && cur.user_id === s.user_id ? cur : s)
+    saveWorkspaceId(s.workspace_id)
+    return s
   }, [])
 
   const refreshData = useCallback(async () => {
-    if (!activeWorkspaceId) {
-      return
-    }
+    if (!activeWorkspaceId) return
     try {
-      // Critical path: workspace + onboarding load first so the UI can render immediately
       const [nextWorkspace, nextOnboarding] = await Promise.all([
         getWorkspace(activeWorkspaceId),
         getOnboarding(activeWorkspaceId),
@@ -193,11 +150,13 @@ function App() {
       setError(null)
 
       if (!hasInitialized) {
-        setActiveTab('overview')
+        const progress = calculateOnboardingProgress(nextOnboarding)
+        if (progress < 40) {
+          setShowOnboarding(true)
+        }
         setHasInitialized(true)
       }
 
-      // Secondary: fire the rest in the background without blocking the UI
       void Promise.allSettled([
         getLaunchReadiness(activeWorkspaceId).then(setLaunchReadiness),
         getCampaign(activeWorkspaceId).then(setCampaign),
@@ -209,74 +168,51 @@ function App() {
         getApprovals(activeWorkspaceId).then(setApprovals),
         getAgentCatalog(activeWorkspaceId).then((catalog) => {
           setAgentCatalog(catalog)
-          setSelectedAgentId((current) => current ?? catalog.recommended_agent_id ?? null)
+          setSelectedAgentId((cur) => cur ?? catalog.recommended_agent_id ?? null)
         }),
         getActivity(activeWorkspaceId, 12).then(setActivity),
       ])
-    } catch (loadError) {
-      setError(loadError instanceof Error ? loadError.message : 'Unable to load workspace.')
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Unable to load workspace.')
     }
   }, [activeWorkspaceId, hasInitialized])
 
   useEffect(() => {
     void (async () => {
-      try {
-        await refreshSession()
-      } catch (sessionError) {
-        setError(sessionError instanceof Error ? sessionError.message : 'Unable to load session.')
-      }
+      try { await refreshSession() }
+      catch (e) { setError(e instanceof Error ? e.message : 'Unable to load session.') }
     })()
   }, [refreshSession])
 
   useEffect(() => {
-    if (!activeWorkspaceId) {
-      return
-    }
+    if (!activeWorkspaceId) return
     void refreshData()
   }, [activeWorkspaceId, refreshData])
 
   useEffect(() => {
-    if (!hasInitialized) {
-      return
-    }
-    const interval = window.setInterval(() => {
-      void refreshData()
-    }, 15000)
-    return () => window.clearInterval(interval)
+    if (!hasInitialized) return
+    const id = window.setInterval(() => void refreshData(), 15000)
+    return () => window.clearInterval(id)
   }, [hasInitialized, refreshData])
 
+  // Auto-scroll chat
+  useEffect(() => {
+    chatBottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [chatEntries])
+
+  // ── Onboarding handlers ───────────────────────────────────────────────────
 
   function handleOnboardingTextChange(field: OnboardingTextField, value: string) {
-    setOnboarding((current) => {
-      if (!current) {
-        return current
-      }
-      return {
-        ...current,
-        [field]: value,
-      }
-    })
+    setOnboarding((cur) => cur ? { ...cur, [field]: value } : cur)
   }
 
   function handleOnboardingListChange(field: OnboardingListField, value: string) {
-    setOnboarding((current) => {
-      if (!current) {
-        return current
-      }
-      return {
-        ...current,
-        [field]: csvToList(value),
-      }
-    })
+    setOnboarding((cur) => cur ? { ...cur, [field]: csvToList(value) } : cur)
   }
 
   async function handleSaveOnboarding() {
-    if (!onboarding || !activeWorkspaceId) {
-      return
-    }
-
+    if (!onboarding || !activeWorkspaceId) return
     setError(null)
-
     startOnboardingTransition(() => {
       void (async () => {
         try {
@@ -284,825 +220,818 @@ function App() {
           setOnboarding(saved)
           setSavedOnboardingSnapshot(JSON.stringify(saved))
           await refreshData()
-
-          if (calculateOnboardingProgress(saved) >= 80) {
-            setActiveTab('integrations')
-          }
-        } catch (saveError) {
-          setError(
-            saveError instanceof Error ? saveError.message : 'Could not save onboarding.',
-          )
+          if (calculateOnboardingProgress(saved) >= 80) setActiveView('integrations')
+        } catch (e) {
+          setError(e instanceof Error ? e.message : 'Could not save onboarding.')
         }
       })()
     })
   }
 
-  async function handleGeneratePipeline() {
-    if (!activeWorkspaceId) {
-      return
-    }
-    setError(null)
+  // ── Pipeline handlers ─────────────────────────────────────────────────────
 
+  async function handleGeneratePipeline() {
+    if (!activeWorkspaceId) return
+    setError(null)
     startPipelineTransition(() => {
       void (async () => {
         try {
           await generatePipeline(activeWorkspaceId)
           await refreshData()
-          setActiveTab('pipeline')
-        } catch (generationError) {
-          setError(
-            generationError instanceof Error
-              ? generationError.message
-              : 'Could not generate the first batch.',
-          )
+        } catch (e) {
+          setError(e instanceof Error ? e.message : 'Could not generate batch.')
         }
       })()
     })
   }
 
   async function handleRunProspectSearch() {
-    if (!activeWorkspaceId) {
-      return
-    }
+    if (!activeWorkspaceId) return
     setError(null)
-
     startProspectTransition(() => {
       void (async () => {
         try {
           await runProspectSearch(activeWorkspaceId)
           await refreshData()
-          setActiveTab('pipeline')
-        } catch (prospectError) {
-          setError(
-            prospectError instanceof Error
-              ? prospectError.message
-              : 'Could not run Apollo prospecting.',
-          )
+        } catch (e) {
+          setError(e instanceof Error ? e.message : 'Could not run prospecting.')
         }
       })()
     })
   }
 
   async function handleVerifyProspectEmails() {
-    if (!activeWorkspaceId || !activeUserId) {
-      return
-    }
+    if (!activeWorkspaceId || !activeUserId) return
     setError(null)
-
     startVerificationTransition(() => {
       void (async () => {
         try {
           await verifyProspectEmails(activeWorkspaceId, activeUserId)
           await refreshData()
-          setActiveTab('pipeline')
-        } catch (verificationError) {
-          setError(
-            verificationError instanceof Error
-              ? verificationError.message
-              : 'Could not verify prospect emails.',
-          )
+        } catch (e) {
+          setError(e instanceof Error ? e.message : 'Could not verify emails.')
         }
       })()
     })
   }
 
   async function handleStageLaunch() {
-    if (!activeWorkspaceId) {
-      return
-    }
+    if (!activeWorkspaceId) return
     setError(null)
-
     startLaunchTransition(() => {
       void (async () => {
         try {
           const result = await stageLaunch(activeWorkspaceId)
           await refreshData()
-          if (result.status === 'blocked') {
-            setError(result.blockers[0] ?? result.message)
-            return
-          }
-          setActiveTab('pipeline')
-        } catch (launchError) {
-          setError(
-            launchError instanceof Error ? launchError.message : 'Could not stage the campaign.',
-          )
+          if (result.status === 'blocked') setError(result.blockers[0] ?? result.message)
+        } catch (e) {
+          setError(e instanceof Error ? e.message : 'Could not stage campaign.')
         }
       })()
     })
   }
 
   async function handleRegisterWebhook() {
-    if (!activeWorkspaceId) {
-      return
-    }
+    if (!activeWorkspaceId) return
     setError(null)
-
     startWebhookTransition(() => {
       void (async () => {
         try {
-          await registerInstantlyWebhook({
-            workspace_id: activeWorkspaceId,
-            target_url: `${apiBaseUrl}/api/webhooks/instantly`,
-          })
+          await registerInstantlyWebhook({ workspace_id: activeWorkspaceId, target_url: `${apiBaseUrl}/api/webhooks/instantly` })
           await refreshData()
-        } catch (webhookError) {
-          setError(
-            webhookError instanceof Error ? webhookError.message : 'Could not register webhook.',
-          )
+        } catch (e) {
+          setError(e instanceof Error ? e.message : 'Could not register webhook.')
         }
       })()
     })
   }
 
   async function handleAuthorize(toolkit: string) {
-    if (!activeWorkspaceId || !activeUserId) {
-      return
-    }
+    if (!activeWorkspaceId || !activeUserId) return
     setBusyToolkit(toolkit)
     setError(null)
-
     try {
-      const launch = await launchOauthConnection({
-        workspace_id: activeWorkspaceId,
-        external_user_id: activeUserId,
-        toolkit,
-        callback_url: window.location.origin,
-      })
-
-      if (launch.redirect_url) {
-        window.open(launch.redirect_url, '_blank', 'noopener,noreferrer')
-      }
-
+      const launch = await launchOauthConnection({ workspace_id: activeWorkspaceId, external_user_id: activeUserId, toolkit, callback_url: window.location.origin })
+      if (launch.redirect_url) window.open(launch.redirect_url, '_blank', 'noopener,noreferrer')
       let attempts = 0
-      const interval = window.setInterval(async () => {
-        attempts += 1
-
+      const iv = window.setInterval(async () => {
+        attempts++
         try {
           const status = await pollConnection(launch.connection_id)
           if (status.status === 'connected' || attempts >= 30) {
-            window.clearInterval(interval)
+            window.clearInterval(iv)
             await refreshData()
             setBusyToolkit(null)
           }
-        } catch {
-          window.clearInterval(interval)
-          setBusyToolkit(null)
-        }
+        } catch { window.clearInterval(iv); setBusyToolkit(null) }
       }, 3000)
-    } catch (launchError) {
-      setError(launchError instanceof Error ? launchError.message : 'Authorization failed.')
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Authorization failed.')
       setBusyToolkit(null)
     }
   }
 
   async function handleSaveApiKey(toolkit: string, label: string, apiKey: string) {
-    if (!activeWorkspaceId || !activeUserId) {
-      return
-    }
+    if (!activeWorkspaceId || !activeUserId) return
     setBusyToolkit(toolkit)
     setError(null)
-
     try {
-      await saveApiKeyConnection({
-        workspace_id: activeWorkspaceId,
-        external_user_id: activeUserId,
-        toolkit,
-        label,
-        api_key: apiKey,
-      })
+      await saveApiKeyConnection({ workspace_id: activeWorkspaceId, external_user_id: activeUserId, toolkit, label, api_key: apiKey })
       await refreshData()
-    } catch (saveError) {
-      setError(saveError instanceof Error ? saveError.message : 'Could not save API key.')
-    } finally {
-      setBusyToolkit(null)
-    }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not save API key.')
+    } finally { setBusyToolkit(null) }
   }
 
   async function handleCheckIntegration(toolkit: string) {
-    if (!activeWorkspaceId) {
-      return
-    }
+    if (!activeWorkspaceId) return
     setBusyToolkit(toolkit)
     setError(null)
-
     try {
       const result = await checkIntegration(toolkit, activeWorkspaceId)
-      setIntegrationChecks((current) => ({
-        ...current,
-        [toolkit]: result,
-      }))
+      setIntegrationChecks((cur) => ({ ...cur, [toolkit]: result }))
       await refreshData()
-    } catch (checkError) {
-      setError(
-        checkError instanceof Error ? checkError.message : 'Could not run integration check.',
-      )
-    } finally {
-      setBusyToolkit(null)
-    }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not check integration.')
+    } finally { setBusyToolkit(null) }
   }
 
   async function handleApprovalDecision(approvalId: string, decision: 'approved' | 'rejected') {
-    if (!activeWorkspaceId) {
-      return
-    }
+    if (!activeWorkspaceId) return
     setBusyApprovalId(approvalId)
     setError(null)
-
     try {
       await decideApproval(approvalId, decision, activeWorkspaceId)
       await refreshData()
-    } catch (decisionError) {
-      setError(decisionError instanceof Error ? decisionError.message : 'Could not update approval.')
-    } finally {
-      setBusyApprovalId(null)
-    }
+      // Update the inline chat approval too
+      setChatEntries((cur) => cur.map((entry) => ({
+        ...entry,
+        approvals: entry.approvals?.map((a) =>
+          a.id === approvalId ? { ...a, status: decision === 'approved' ? 'approved' : 'rejected' } : a
+        ),
+      })))
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not update approval.')
+    } finally { setBusyApprovalId(null) }
   }
 
   async function handleReplyDecision(replyId: string, decision: 'approved' | 'dismissed') {
-    if (!activeWorkspaceId) {
-      return
-    }
+    if (!activeWorkspaceId) return
     setBusyReplyId(replyId)
     setError(null)
-
     try {
       await decideReply(replyId, decision, activeWorkspaceId)
       await refreshData()
-      if (decision === 'approved') {
-        setActiveTab('pipeline')
-      }
-    } catch (replyError) {
-      setError(replyError instanceof Error ? replyError.message : 'Could not update reply.')
-    } finally {
-      setBusyReplyId(null)
-    }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not update reply.')
+    } finally { setBusyReplyId(null) }
   }
 
+  // ── Chat ──────────────────────────────────────────────────────────────────
+
   async function runPrompt(prompt: string) {
-    if (!activeWorkspaceId) {
-      return
-    }
-    setChatPrompt(prompt)
-    setChatEntries([
-      { role: 'user', content: prompt },
-      { role: 'assistant', content: '' },
-    ])
-    setChatMeta(`Streaming ${import.meta.env.VITE_API_URL ?? 'http://localhost:8000'}/chat`)
-    setActiveTab('ai')
+    if (!activeWorkspaceId || !prompt.trim()) return
+    const userEntry: ChatEntry = { id: crypto.randomUUID(), role: 'user', content: prompt, timestamp: new Date() }
+    const assistantEntry: ChatEntry = { id: crypto.randomUUID(), role: 'assistant', content: '', timestamp: new Date() }
+    setChatEntries((cur) => [...cur, userEntry, assistantEntry])
+    setChatInput('')
+    setActiveView('ai')
     setError(null)
 
     startChatTransition(() => {
       void (async () => {
         try {
           await streamChatWithAgent(
-            {
-              workspace_id: activeWorkspaceId,
-              message: prompt,
-              agent_id: selectedAgentId ?? agentCatalog?.recommended_agent_id ?? undefined,
-            },
+            { workspace_id: activeWorkspaceId, message: prompt, agent_id: selectedAgentId ?? agentCatalog?.recommended_agent_id ?? undefined },
             {
               onMeta(payload) {
-                if (payload.selected_agent_id) {
-                  setSelectedAgentId(payload.selected_agent_id)
-                }
-                if (payload.selected_agent_label) {
-                  setChatMeta(
-                    `${payload.selected_agent_label} streaming via ${payload.model ?? 'gpt-4o'}`,
-                  )
-                }
+                if (payload.selected_agent_id) setSelectedAgentId(payload.selected_agent_id)
+                if (payload.selected_agent_label) setChatMeta(`${payload.selected_agent_label} · ${payload.model ?? 'gpt-4o'}`)
               },
               onDelta(delta) {
-                setChatEntries((current) =>
-                  current.map((entry, index) =>
-                    index === current.length - 1 && entry.role === 'assistant'
-                      ? { ...entry, content: entry.content + delta }
-                      : entry,
-                  ),
-                )
+                setChatEntries((cur) => cur.map((e, i) =>
+                  i === cur.length - 1 && e.role === 'assistant' ? { ...e, content: e.content + delta } : e
+                ))
               },
               onDone(finalText) {
-                setChatEntries((current) =>
-                  current.map((entry, index) =>
-                    index === current.length - 1 && entry.role === 'assistant'
-                      ? { ...entry, content: finalText }
-                      : entry,
-                  ),
-                )
+                setChatEntries((cur) => cur.map((e, i) =>
+                  i === cur.length - 1 && e.role === 'assistant'
+                    ? { ...e, content: finalText, approvals: pendingApprovals.length > 0 ? pendingApprovals : undefined }
+                    : e
+                ))
                 setChatMeta('')
               },
             },
           )
-        } catch (chatError) {
-          setError(chatError instanceof Error ? chatError.message : 'Chat failed.')
+        } catch (e) {
+          setError(e instanceof Error ? e.message : 'Chat failed.')
         }
       })()
     })
   }
 
-  async function handleChatSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault()
-    await runPrompt(chatPrompt)
+  async function handleChatSubmit(e: FormEvent<HTMLFormElement>) {
+    e.preventDefault()
+    await runPrompt(chatInput)
   }
 
+  // ── Onboarding via chat (agent-driven) ───────────────────────────────────
+
+  async function handleOnboardingComplete(profile: OnboardingProfile) {
+    if (!activeWorkspaceId) return
+    try {
+      const saved = await updateOnboarding(activeWorkspaceId, profile)
+      setOnboarding(saved)
+      setSavedOnboardingSnapshot(JSON.stringify(saved))
+      setShowOnboarding(false)
+      await refreshData()
+      // Welcome message in chat
+      const welcomeMsg: ChatEntry = {
+        id: crypto.randomUUID(),
+        role: 'assistant',
+        content: `Great! I've got everything I need about ${profile.product_name ?? 'your product'}. I'm now going to find your best-fit prospects, write personalised outreach, and prepare your first campaign sequence. I'll check in when I need your approval — you can sit back. 🚀`,
+        timestamp: new Date(),
+      }
+      setChatEntries([welcomeMsg])
+      setActiveView('ai')
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not save profile.')
+    }
+  }
+
+  // ── Render: loading ───────────────────────────────────────────────────────
 
   if (!session || !workspace || !onboarding) {
     return (
-      <main className="flex h-screen items-center justify-center bg-background">
-        <div className="flex flex-col items-center gap-3">
-          <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-primary text-primary-foreground">
-            <Sparkles className="h-4 w-4" />
+      <main className="flex h-screen items-center justify-center" style={{ background: 'hsl(var(--sidebar-bg))' }}>
+        <div className="flex flex-col items-center gap-4">
+          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary/20">
+            <Sparkles className="h-5 w-5 text-primary" />
           </div>
           {error ? (
             <p className="text-sm text-danger-text">{error}</p>
           ) : (
-            <p className="text-sm text-muted-foreground">Loading workspace…</p>
+            <div className="flex gap-1.5">
+              <div className="typing-dot" />
+              <div className="typing-dot" />
+              <div className="typing-dot" />
+            </div>
           )}
         </div>
       </main>
     )
   }
 
-  const requiredConnections = workspace.connections.filter(
-    (connection) => connection.category === 'required',
-  )
-  const hunterConnection = workspace.connections.find((connection) => connection.toolkit === 'hunter')
+  // ── Render: animated onboarding ───────────────────────────────────────────
 
-  const navItems: { value: AppTab; label: string; icon: typeof Home; badge?: number }[] = [
-    { value: 'overview', label: 'Overview', icon: Home },
-    { value: 'onboarding', label: 'Company', icon: Settings },
-    { value: 'integrations', label: 'Integrations', icon: Cable },
-    { value: 'warming', label: 'Warming', icon: Activity },
-    { value: 'pipeline', label: 'Outreach', icon: Zap, badge: (pendingApprovals.length + pendingReplies.length) || undefined },
-    { value: 'ai', label: 'AI', icon: Cpu },
-  ]
+  if (showOnboarding) {
+    return (
+      <AnimatedOnboarding
+        initial={onboarding}
+        onComplete={handleOnboardingComplete}
+        onSkip={() => setShowOnboarding(false)}
+      />
+    )
+  }
+
+  const requiredConnections = workspace.connections.filter((c) => c.category === 'required')
+  const hunterConnection = workspace.connections.find((c) => c.toolkit === 'hunter')
+
+  // ── Render: main app ──────────────────────────────────────────────────────
 
   return (
-    <main className="h-screen overflow-hidden bg-background text-foreground">
-      <Tabs
-        value={activeTab}
-        onValueChange={(value) => setActiveTab(value as AppTab)}
-        className="grid h-full grid-cols-[192px_minmax(0,1fr)] overflow-hidden"
-      >
-        {/* Sidebar */}
-        <aside className="flex h-full flex-col border-r border-border bg-card">
-          {/* Logo */}
-          <div className="flex items-center gap-2.5 px-4 py-4">
-            <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-primary text-primary-foreground">
-              <Sparkles className="h-3.5 w-3.5" />
-            </div>
-            <span className="text-sm font-semibold tracking-tight">PipeIQ</span>
-          </div>
+    <main className="flex h-screen overflow-hidden bg-background">
+      {/* ── Sidebar ── */}
+      <Sidebar
+        collapsed={sidebarCollapsed}
+        activeView={activeView}
+        campaign={campaign}
+        pendingInbox={pendingApprovals.length + pendingReplies.length}
+        onCollapse={() => setSidebarCollapsed((v) => !v)}
+        onNavigate={setActiveView}
+        onNewChat={() => { setChatEntries([]); setActiveView('ai') }}
+        userName={session.user_id}
+      />
 
-          {/* Nav */}
-          <nav className="flex-1 px-2 py-1">
-            <TabsList className="grid h-auto w-full grid-cols-1 gap-0.5 bg-transparent p-0">
-              {navItems.map(({ value, label, icon: Icon, badge }) => (
-                <TabsTrigger
-                  key={value}
-                  value={value}
-                  className="group relative h-9 w-full justify-start gap-3 rounded-lg px-3 text-muted-foreground data-[state=active]:bg-secondary data-[state=active]:text-foreground"
-                >
-                  <Icon className="h-4 w-4 shrink-0" />
-                  <span className="flex-1 text-left text-[13px] font-medium">{label}</span>
-                  {badge !== undefined && badge > 0 ? (
-                    <span className="flex h-[18px] min-w-[18px] items-center justify-center rounded-full bg-primary px-1 text-[10px] font-medium text-primary-foreground">
-                      {badge}
-                    </span>
-                  ) : null}
-                </TabsTrigger>
-              ))}
-            </TabsList>
-          </nav>
+      {/* ── Main content ── */}
+      <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
+        {/* Top bar */}
+        <TopBar
+          activeView={activeView}
+          chatMeta={chatMeta}
+          isChatPending={isChatPending}
+          pastConvosOpen={pastConvosOpen}
+          onTogglePastConvos={() => setPastConvosOpen((v) => !v)}
+        />
 
-          {/* Footer */}
-          <div className="px-4 py-4">
-            <div className="flex items-center gap-2">
-              <span className={`h-1.5 w-1.5 rounded-full ${campaign?.status === 'running' ? 'bg-success' : 'bg-muted-foreground/30'}`} />
-              <span className="text-[11px] text-muted-foreground">{campaign?.status === 'running' ? 'Running' : 'Idle'}</span>
-            </div>
-          </div>
-        </aside>
+        {/* Content area */}
+        <div className="flex min-h-0 flex-1 overflow-hidden">
+          <div className="min-w-0 flex-1 overflow-hidden">
 
-        {/* Main content */}
-        <section className="flex h-full min-w-0 flex-col overflow-hidden bg-background">
-          {/* Top bar */}
-          <header className="flex h-[49px] shrink-0 items-center justify-between border-b border-border bg-card px-5">
-            <h1 className="text-sm font-medium">
-              {navItems.find((n) => n.value === activeTab)?.label ?? 'Workspace'}
-            </h1>
-            {pendingApprovals.length > 0 ? (
-              <Badge variant="warning">{pendingApprovals.length} pending</Badge>
-            ) : null}
-          </header>
-
-          <div className="min-h-0 flex-1 overflow-hidden p-5">
-            <TabsContent value="onboarding" className="h-full">
-              <CompanyProfilePanel
-                onboarding={onboarding}
-                onboardingDirty={onboardingDirty}
-                saving={isSavingOnboarding}
-                workspace={workspace}
-                onListChange={handleOnboardingListChange}
-                onSave={handleSaveOnboarding}
-                onTabChange={(tab) => {
-                  if (tab === 'onboarding') setActiveTab('onboarding')
-                }}
-                onTextChange={handleOnboardingTextChange}
+            {/* ── AI Chat view ── */}
+            {activeView === 'ai' && (
+              <ChatView
+                approvals={approvals}
+                busyApprovalId={busyApprovalId}
+                chatBottomRef={chatBottomRef}
+                chatEntries={chatEntries}
+                chatInput={chatInput}
+                chatMeta={chatMeta}
+                isChatPending={isChatPending}
+                onApprovalDecision={handleApprovalDecision}
+                onInputChange={setChatInput}
+                onSubmit={handleChatSubmit}
+                onSuggestionClick={runPrompt}
+                userName={session.user_id}
               />
-            </TabsContent>
+            )}
 
-            <TabsContent value="overview" className="h-full">
-              <OverviewPanel
+            {/* ── Analytics ── */}
+            {activeView === 'analytics' && (
+              <AnalyticsView
                 activity={activity}
-                onRunPrompt={runPrompt}
+                campaign={campaign}
                 pendingApprovals={pendingApprovals}
                 workspace={workspace}
+                onRunPrompt={runPrompt}
               />
-            </TabsContent>
+            )}
 
-            <TabsContent value="integrations" className="h-full">
-              <IntegrationsPanel
-                busyToolkit={busyToolkit}
-                connections={workspace.connections}
-                diagnostics={integrationChecks}
-                onAuthorize={handleAuthorize}
-                onCheck={handleCheckIntegration}
-                onSaveApiKey={handleSaveApiKey}
-              />
-            </TabsContent>
+            {/* ── Company Profile ── */}
+            {activeView === 'company-profile' && (
+              <div className="h-full overflow-y-auto p-6">
+                <CompanyProfilePanel
+                  onboarding={onboarding}
+                  onboardingDirty={onboardingDirty}
+                  saving={isSavingOnboarding}
+                  workspace={workspace}
+                  onListChange={handleOnboardingListChange}
+                  onSave={handleSaveOnboarding}
+                  onTabChange={() => {}}
+                  onTextChange={handleOnboardingTextChange}
+                />
+              </div>
+            )}
 
-            <TabsContent value="warming" className="h-full overflow-y-auto p-6">
-              <WarmingPanel workspaceId={workspace.id} />
-            </TabsContent>
+            {/* ── Playbooks ── */}
+            {activeView === 'company-playbooks' && (
+              <PlaybooksPanel workspaceId={workspace.id} />
+            )}
 
-            <TabsContent value="pipeline" className="h-full">
-              {pipeline && prospectRun && launchReadiness && campaign && instantlyWebhook ? (
-                <OutreachPanel
-                  approvals={approvals}
-                  busyApprovalId={busyApprovalId}
-                  busyReplyId={busyReplyId}
-                  busyToolkit={busyToolkit}
-                  campaign={campaign}
-                  generating={isGeneratingPipeline}
+            {/* ── Campaigns ── */}
+            {activeView === 'campaigns' && pipeline && prospectRun && launchReadiness && campaign && instantlyWebhook && (
+              <div className="h-full overflow-y-auto p-6 space-y-6">
+                <ProspectsPanel
                   hunterConnection={hunterConnection}
-                  launching={isLaunchingCampaign}
-                  meetings={meetings}
                   pipeline={pipeline}
                   prospectRun={prospectRun}
-                  readiness={launchReadiness}
-                  registeringWebhook={isRegisteringWebhook}
-                  replies={replies}
-                  requiredConnections={requiredConnections}
-                  runningProspects={isRunningProspects}
-                  verifyingProspects={isVerifyingProspects}
-                  webhook={instantlyWebhook}
-                  webhookTargetUrl={`${apiBaseUrl}/api/webhooks/instantly`}
-                  onApprovalDecision={handleApprovalDecision}
-                  onAuthorize={handleAuthorize}
+                  running={isRunningProspects}
+                  verifying={isVerifyingProspects}
                   onConnectHunter={() => handleAuthorize('hunter')}
+                  onRun={handleRunProspectSearch}
+                  onVerify={handleVerifyProspectEmails}
+                />
+                <LaunchControlRoom
+                  busyToolkit={busyToolkit}
+                  generating={isGeneratingPipeline}
+                  launching={isLaunchingCampaign}
+                  pipeline={pipeline}
+                  readiness={launchReadiness}
+                  requiredConnections={requiredConnections}
+                  onAuthorize={handleAuthorize}
                   onGenerate={handleGeneratePipeline}
-                  onReplyDecision={handleReplyDecision}
-                  onRegisterWebhook={handleRegisterWebhook}
-                  onRunProspects={handleRunProspectSearch}
                   onSaveApiKey={handleSaveApiKey}
                   onStageLaunch={handleStageLaunch}
-                  onVerifyProspects={handleVerifyProspectEmails}
                 />
-              ) : (
-                <div className="flex h-full items-center justify-center">
-                  <p className="text-sm text-muted-foreground">Loading outreach data…</p>
-                </div>
-              )}
-            </TabsContent>
+              </div>
+            )}
 
-            <TabsContent value="ai" className="h-full">
-              <AiPanel
-                chatEntries={chatEntries}
-                chatMeta={chatMeta}
-                chatPrompt={chatPrompt}
-                isChatPending={isChatPending}
-                onPromptChange={setChatPrompt}
-                onPromptSubmit={handleChatSubmit}
-                onSuggestionClick={runPrompt}
-              />
-            </TabsContent>
+            {/* ── Sequences ── */}
+            {activeView === 'sequences' && pipeline && (
+              <div className="h-full overflow-y-auto p-6">
+                <SequencePanel workspaceId={pipeline.workspace_id} pipeline={pipeline} />
+              </div>
+            )}
+
+            {/* ── Inbox ── */}
+            {activeView === 'inbox' && (
+              <div className="h-full overflow-y-auto p-6 space-y-6">
+                {replies.length > 0 && (
+                  <RepliesPanel
+                    busyReplyId={busyReplyId}
+                    registeringWebhook={isRegisteringWebhook}
+                    replies={replies}
+                    webhook={instantlyWebhook!}
+                    webhookTargetUrl={`${apiBaseUrl}/api/webhooks/instantly`}
+                    onDecision={handleReplyDecision}
+                    onRegisterWebhook={handleRegisterWebhook}
+                  />
+                )}
+                {meetings.length > 0 && campaign && (
+                  <MeetingsPanel campaign={campaign} meetings={meetings} />
+                )}
+                {replies.length === 0 && meetings.length === 0 && (
+                  <div className="flex h-full items-center justify-center">
+                    <div className="text-center">
+                      <Inbox className="mx-auto mb-3 h-8 w-8 text-muted-foreground/40" />
+                      <p className="text-sm font-medium">Inbox is empty</p>
+                      <p className="mt-1 text-xs text-muted-foreground">Replies and meeting requests will appear here</p>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* ── Integrations ── */}
+            {activeView === 'integrations' && (
+              <div className="h-full overflow-y-auto p-6">
+                <IntegrationsPanel
+                  busyToolkit={busyToolkit}
+                  connections={workspace.connections}
+                  diagnostics={integrationChecks}
+                  onAuthorize={handleAuthorize}
+                  onCheck={handleCheckIntegration}
+                  onSaveApiKey={handleSaveApiKey}
+                />
+              </div>
+            )}
+
+            {/* ── Warmup ── */}
+            {activeView === 'warmup' && (
+              <div className="h-full overflow-y-auto p-6">
+                <WarmingPanel workspaceId={workspace.id} />
+              </div>
+            )}
+
+            {/* ── Settings ── */}
+            {activeView === 'settings' && (
+              <div className="flex h-full items-center justify-center">
+                <div className="text-center">
+                  <Settings className="mx-auto mb-3 h-8 w-8 text-muted-foreground/40" />
+                  <p className="text-sm font-medium">Settings</p>
+                  <p className="mt-1 text-xs text-muted-foreground">Workspace configuration coming soon</p>
+                </div>
+              </div>
+            )}
           </div>
 
-          {error ? (
-            <div className="shrink-0 border-t border-danger-text/20 bg-danger-subtle px-5 py-2.5 text-xs text-danger-text">
-              {error}
-            </div>
-          ) : null}
-        </section>
-      </Tabs>
+          {/* ── Past convos panel ── */}
+          {pastConvosOpen && (
+            <PastConvosPanel
+              convos={pastConvos}
+              onSelect={() => {}}
+              onClose={() => setPastConvosOpen(false)}
+            />
+          )}
+        </div>
+
+        {/* Error bar */}
+        {error && (
+          <div className="shrink-0 border-t border-danger/20 bg-danger-subtle px-5 py-2.5 text-xs text-danger-text flex items-center justify-between">
+            <span>{error}</span>
+            <button type="button" onClick={() => setError(null)} className="ml-4 opacity-60 hover:opacity-100">✕</button>
+          </div>
+        )}
+      </div>
     </main>
   )
 }
 
-type OutreachTab = 'prospects' | 'approvals' | 'pipeline' | 'sequences' | 'replies' | 'meetings'
+// ─── Sidebar ─────────────────────────────────────────────────────────────────
 
-function OutreachPanel({
-  approvals, busyApprovalId, busyReplyId, busyToolkit, campaign, generating,
-  hunterConnection, launching, meetings, pipeline, prospectRun, readiness,
-  registeringWebhook, replies, requiredConnections, runningProspects, verifyingProspects,
-  webhook, webhookTargetUrl,
-  onApprovalDecision, onAuthorize, onConnectHunter, onGenerate, onReplyDecision,
-  onRegisterWebhook, onRunProspects, onSaveApiKey, onStageLaunch, onVerifyProspects,
+function Sidebar({
+  collapsed, activeView, campaign, pendingInbox,
+  onCollapse, onNavigate, onNewChat, userName,
 }: {
-  approvals: ReturnType<typeof import('./lib/api').getApprovals> extends Promise<infer T> ? T : never
-  busyApprovalId: string | null
-  busyReplyId: string | null
-  busyToolkit: string | null
-  campaign: import('./lib/api').CampaignSummary
-  generating: boolean
-  hunterConnection: import('./lib/api').ConnectionTarget | undefined
-  launching: boolean
-  meetings: import('./lib/api').MeetingPrepItem[]
-  pipeline: import('./lib/api').PipelineSnapshot
-  prospectRun: import('./lib/api').ProspectRunSummary
-  readiness: import('./lib/api').LaunchReadiness
-  registeringWebhook: boolean
-  replies: import('./lib/api').ReplyQueueItem[]
-  requiredConnections: import('./lib/api').ConnectionTarget[]
-  runningProspects: boolean
-  verifyingProspects: boolean
-  webhook: import('./lib/api').InstantlyWebhookSubscription
-  webhookTargetUrl: string
-  onApprovalDecision: (id: string, d: 'approved' | 'rejected') => Promise<void>
-  onAuthorize: (toolkit: string) => Promise<void>
-  onConnectHunter: () => Promise<void>
-  onGenerate: () => Promise<void>
-  onReplyDecision: (id: string, d: 'approved' | 'dismissed') => Promise<void>
-  onRegisterWebhook: () => Promise<void>
-  onRunProspects: () => Promise<void>
-  onSaveApiKey: (toolkit: string, label: string, apiKey: string) => Promise<void>
-  onStageLaunch: () => Promise<void>
-  onVerifyProspects: () => Promise<void>
+  collapsed: boolean
+  activeView: AppView
+  campaign: CampaignSummary | null
+  pendingInbox: number
+  onCollapse: () => void
+  onNavigate: (view: AppView) => void
+  onNewChat: () => void
+  userName: string
 }) {
-  const [subTab, setSubTab] = useState<OutreachTab>('prospects')
-  const pendingApprovals = approvals.filter((a) => a.status === 'pending')
-  const pendingReplies = replies.filter((r) => r.status === 'pending')
+  const isRunning = campaign?.status === 'running'
 
-  const subNav: { value: OutreachTab; label: string; badge?: number }[] = [
-    { value: 'prospects', label: 'Prospects' },
-    { value: 'pipeline', label: 'Pipeline' },
-    { value: 'sequences', label: 'Sequences' },
-    { value: 'approvals', label: 'Approvals', badge: pendingApprovals.length || undefined },
-    { value: 'replies', label: 'Replies', badge: pendingReplies.length || undefined },
-    { value: 'meetings', label: 'Meetings' },
+  const sections = [
+    {
+      items: [
+        { view: 'ai' as AppView, icon: Cpu, label: 'AI' },
+        { view: 'analytics' as AppView, icon: BarChart2, label: 'Analytics' },
+      ],
+    },
+    {
+      label: 'Company',
+      items: [
+        { view: 'company-profile' as AppView, icon: Building2, label: 'Profile' },
+        { view: 'company-playbooks' as AppView, icon: BookOpen, label: 'Playbooks' },
+      ],
+    },
+    {
+      label: 'Campaigns',
+      items: [
+        { view: 'campaigns' as AppView, icon: Zap, label: 'Campaigns', badge: undefined },
+        { view: 'sequences' as AppView, icon: Layers, label: 'Email sequences' },
+      ],
+    },
+    {
+      items: [
+        { view: 'inbox' as AppView, icon: Inbox, label: 'Inbox', badge: pendingInbox || undefined },
+        { view: 'integrations' as AppView, icon: Hash, label: 'Integrations' },
+        { view: 'warmup' as AppView, icon: Flame, label: 'Warmup' },
+      ],
+    },
   ]
 
   return (
-    <div className="flex h-full flex-col gap-4 overflow-hidden">
-      <div className="flex shrink-0 gap-1 rounded-lg border border-border bg-card p-1 w-fit">
-        {subNav.map(({ value, label, badge }) => (
-          <button
-            key={value}
-            type="button"
-            onClick={() => setSubTab(value)}
-            className={`relative flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
-              subTab === value
-                ? 'bg-primary text-primary-foreground shadow-sm'
-                : 'text-muted-foreground hover:text-foreground hover:bg-secondary'
-            }`}
-          >
-            {label}
-            {badge !== undefined && badge > 0 ? (
-              <span className={`flex h-4 min-w-[16px] items-center justify-center rounded-full px-1 text-[10px] font-medium ${subTab === value ? 'bg-white/25 text-white' : 'bg-primary text-primary-foreground'}`}>
-                {badge}
-              </span>
-            ) : null}
-          </button>
-        ))}
+    <aside
+      className="sidebar flex flex-col h-full shrink-0 transition-all duration-220"
+      style={{ width: collapsed ? 52 : 220 }}
+    >
+      {/* Logo + collapse */}
+      <div className="flex h-[49px] shrink-0 items-center justify-between px-3 border-b" style={{ borderColor: 'hsl(var(--sidebar-border))' }}>
+        {!collapsed && (
+          <div className="flex items-center gap-2.5">
+            <div className="flex h-6 w-6 items-center justify-center rounded-lg bg-primary/20">
+              <Sparkles className="h-3.5 w-3.5 text-primary" />
+            </div>
+            <span className="text-[13px] font-semibold tracking-tight text-white">PipeIQ</span>
+          </div>
+        )}
+        <button
+          type="button"
+          onClick={onCollapse}
+          className="flex h-7 w-7 items-center justify-center rounded-md transition-colors hover:bg-white/10 text-sidebar-muted hover:text-white ml-auto"
+        >
+          {collapsed ? <ChevronRight className="h-4 w-4" /> : <ChevronLeft className="h-4 w-4" />}
+        </button>
       </div>
 
-      <div className="min-h-0 flex-1 overflow-hidden">
-        {subTab === 'prospects' && (
-          <ProspectsPanel
-            hunterConnection={hunterConnection}
-            pipeline={pipeline}
-            prospectRun={prospectRun}
-            running={runningProspects}
-            verifying={verifyingProspects}
-            onConnectHunter={onConnectHunter}
-            onRun={onRunProspects}
-            onVerify={onVerifyProspects}
-          />
-        )}
-        {subTab === 'pipeline' && (
-          <LaunchControlRoom
-            busyToolkit={busyToolkit}
-            generating={generating}
-            launching={launching}
-            pipeline={pipeline}
-            readiness={readiness}
-            requiredConnections={requiredConnections}
-            onAuthorize={onAuthorize}
-            onGenerate={onGenerate}
-            onSaveApiKey={onSaveApiKey}
-            onStageLaunch={onStageLaunch}
-          />
-        )}
-        {subTab === 'approvals' && (
-          <div className="grid h-full auto-rows-min grid-cols-2 gap-3 overflow-y-auto content-start">
-            {approvals.length > 0 ? (
-              approvals.map((approval) => (
-                <ApprovalCard
-                  key={approval.id}
-                  approval={approval}
-                  busy={busyApprovalId === approval.id}
-                  onDecision={onApprovalDecision}
-                />
-              ))
-            ) : (
-              <div className="col-span-2 rounded-xl border border-dashed border-border p-10 text-center">
-                <p className="text-sm font-medium">No approvals yet</p>
-                <p className="mt-1 text-xs text-muted-foreground">Generate the personalized batch first.</p>
-              </div>
+      {/* New chat button */}
+      <div className="px-2 pt-3 pb-1">
+        <button
+          type="button"
+          onClick={onNewChat}
+          className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-[13px] font-medium transition-colors hover:bg-white/10"
+          style={{ color: 'hsl(var(--sidebar-muted))' }}
+          title="New chat"
+        >
+          <Plus className="h-4 w-4 shrink-0" />
+          {!collapsed && <span>New chat</span>}
+        </button>
+      </div>
+
+      {/* Nav */}
+      <nav className="flex-1 overflow-y-auto px-2 py-1 space-y-0.5">
+        {sections.map((section, si) => (
+          <div key={si}>
+            {section.label && !collapsed && (
+              <p className="sidebar-section-label">{section.label}</p>
             )}
-          </div>
-        )}
-        {subTab === 'replies' && (
-          <RepliesPanel
-            busyReplyId={busyReplyId}
-            registeringWebhook={registeringWebhook}
-            replies={replies}
-            webhook={webhook}
-            webhookTargetUrl={webhookTargetUrl}
-            onDecision={onReplyDecision}
-            onRegisterWebhook={onRegisterWebhook}
-          />
-        )}
-        {subTab === 'sequences' && (
-          <SequencePanel workspaceId={pipeline.workspace_id} pipeline={pipeline} />
-        )}
-        {subTab === 'meetings' && (
-          <MeetingsPanel campaign={campaign} meetings={meetings} />
-        )}
-      </div>
-    </div>
-  )
-}
-
-function OverviewPanel({
-  activity,
-  onRunPrompt,
-  pendingApprovals,
-  workspace,
-}: {
-  activity: OperatorEvent[]
-  onRunPrompt: (prompt: string) => Promise<void>
-  pendingApprovals: ApprovalItem[]
-  workspace: WorkspaceSummary
-}) {
-  return (
-    <div className="h-full overflow-y-auto">
-      <div className="mx-auto max-w-2xl space-y-6 py-2">
-        {/* Metrics */}
-        <div className="grid grid-cols-3 gap-3">
-          {workspace.metrics.map((metric) => (
-            <div key={metric.label} className="rounded-xl border border-border bg-card p-4">
-              <p className="text-xs text-muted-foreground">{metric.label}</p>
-              <p className="mt-1.5 text-2xl font-semibold tracking-tight">{metric.value}</p>
-              <p className="mt-0.5 text-[11px] text-muted-foreground">{metric.caption}</p>
-            </div>
-          ))}
-        </div>
-
-        {/* Approvals */}
-        {pendingApprovals.length > 0 ? (
-          <div>
-            <p className="mb-2 text-xs font-medium text-muted-foreground">Pending approvals</p>
-            <div className="space-y-2">
-              {pendingApprovals.map((approval) => (
-                <div key={approval.id} className="flex items-center justify-between rounded-lg border border-border bg-card px-4 py-3">
-                  <div>
-                    <p className="text-sm font-medium">{approval.title}</p>
-                    <p className="mt-0.5 text-xs text-muted-foreground">{approval.summary}</p>
-                  </div>
-                  <Badge variant="warning">{approval.sample_size} samples</Badge>
-                </div>
-              ))}
-            </div>
-          </div>
-        ) : null}
-
-        {/* Activity */}
-        <div>
-          <p className="mb-2 text-xs font-medium text-muted-foreground">Recent activity</p>
-          {activity.length > 0 ? (
-            <div className="space-y-1.5">
-              {activity.slice(0, 6).map((event) => (
-                <div key={event.id} className="flex items-start gap-3 rounded-lg border border-border bg-card px-4 py-3">
-                  <Activity className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                  <div className="min-w-0 flex-1">
-                    <p className="text-xs font-medium">{event.summary}</p>
-                    <p className="mt-0.5 text-[11px] text-muted-foreground">{new Date(event.created_at).toLocaleString()}</p>
-                  </div>
-                </div>
-              ))}
-            </div>
-          ) : (
-            <div className="rounded-lg border border-dashed border-border px-4 py-6 text-center">
-              <p className="text-xs text-muted-foreground">No activity yet</p>
-            </div>
-          )}
-        </div>
-
-        {/* Ask AI */}
-        <div>
-          <p className="mb-2 text-xs font-medium text-muted-foreground">Ask AI</p>
-          <div className="flex flex-wrap gap-2">
-            {defaultSuggestions.map((s) => (
-              <Button key={s} size="sm" variant="outline" onClick={() => onRunPrompt(s)}>{s}</Button>
+            {section.items.map(({ view, icon: Icon, label, badge }) => (
+              <button
+                key={view}
+                type="button"
+                onClick={() => onNavigate(view)}
+                className={`sidebar-nav-item w-full ${activeView === view ? 'active' : ''}`}
+                title={collapsed ? label : undefined}
+              >
+                <Icon className="h-4 w-4 shrink-0" />
+                {!collapsed && <span className="flex-1 text-left">{label}</span>}
+                {!collapsed && badge !== undefined && badge > 0 && (
+                  <span className="flex h-[18px] min-w-[18px] items-center justify-center rounded-full bg-primary px-1 text-[10px] font-semibold text-white">
+                    {badge}
+                  </span>
+                )}
+                {collapsed && badge !== undefined && badge > 0 && (
+                  <span className="absolute top-1 right-1 h-2 w-2 rounded-full bg-primary" />
+                )}
+              </button>
             ))}
           </div>
-        </div>
+        ))}
+      </nav>
+
+      {/* Footer */}
+      <div className="shrink-0 border-t px-3 py-3 space-y-2" style={{ borderColor: 'hsl(var(--sidebar-border))' }}>
+        {/* Campaign status */}
+        {!collapsed && (
+          <div className="flex items-center gap-2">
+            {isRunning ? <div className="status-dot-running" /> : <div className="status-dot-idle" />}
+            <span className="text-[11px]" style={{ color: 'hsl(var(--sidebar-muted))' }}>
+              {isRunning ? 'Campaign running' : 'No active campaign'}
+            </span>
+          </div>
+        )}
+        {/* Settings */}
+        <button
+          type="button"
+          onClick={() => onNavigate('settings')}
+          className={`sidebar-nav-item w-full ${activeView === 'settings' ? 'active' : ''}`}
+          title={collapsed ? 'Settings' : undefined}
+        >
+          <Settings className="h-4 w-4 shrink-0" />
+          {!collapsed && <span className="flex-1 text-left">Settings</span>}
+        </button>
+        {/* User */}
+        {!collapsed && (
+          <div className="flex items-center gap-2.5 px-2 py-1.5">
+            <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-primary/30 text-[10px] font-bold text-primary-foreground">
+              {userName.slice(0, 1).toUpperCase()}
+            </div>
+            <span className="truncate text-[12px] font-medium" style={{ color: 'hsl(var(--sidebar-fg))' }}>
+              {userName.split('@')[0]}
+            </span>
+          </div>
+        )}
       </div>
-    </div>
+    </aside>
   )
 }
 
-function AiPanel({
-  chatEntries,
-  chatMeta,
-  chatPrompt,
-  isChatPending,
-  onPromptChange,
-  onPromptSubmit,
-  onSuggestionClick,
-}: {
-  chatEntries: ChatEntry[]
+// ─── Top Bar ─────────────────────────────────────────────────────────────────
+
+function TopBar({ activeView, chatMeta, isChatPending, pastConvosOpen, onTogglePastConvos }: {
+  activeView: AppView
   chatMeta: string
-  chatPrompt: string
   isChatPending: boolean
-  onPromptChange: (value: string) => void
-  onPromptSubmit: (event: FormEvent<HTMLFormElement>) => Promise<void>
-  onSuggestionClick: (prompt: string) => Promise<void>
+  pastConvosOpen: boolean
+  onTogglePastConvos: () => void
 }) {
-  const userEntry = chatEntries.find((e) => e.role === 'user')
-  const assistantEntry = chatEntries.find((e) => e.role === 'assistant')
+  const titles: Record<AppView, string> = {
+    'ai': 'AI',
+    'analytics': 'Analytics',
+    'company-profile': 'Company · Profile',
+    'company-playbooks': 'Company · Playbooks',
+    'campaigns': 'Campaigns',
+    'sequences': 'Email Sequences',
+    'inbox': 'Inbox',
+    'integrations': 'Integrations',
+    'warmup': 'Warmup',
+    'settings': 'Settings',
+  }
 
   return (
-    <div className="flex h-full flex-col">
+    <header className="flex h-[49px] shrink-0 items-center justify-between border-b border-border bg-card px-5">
+      <div className="flex items-center gap-3">
+        <h1 className="text-[13px] font-semibold text-foreground">{titles[activeView]}</h1>
+        {activeView === 'ai' && isChatPending && chatMeta && (
+          <span className="text-[11px] text-muted-foreground flex items-center gap-1.5">
+            <span className="inline-flex gap-0.5">
+              <div className="typing-dot" style={{ width: 4, height: 4 }} />
+              <div className="typing-dot" style={{ width: 4, height: 4, animationDelay: '0.15s' }} />
+              <div className="typing-dot" style={{ width: 4, height: 4, animationDelay: '0.3s' }} />
+            </span>
+            {chatMeta}
+          </span>
+        )}
+      </div>
+      {activeView === 'ai' && (
+        <button
+          type="button"
+          onClick={onTogglePastConvos}
+          className={`flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-[12px] font-medium transition-colors ${pastConvosOpen ? 'bg-secondary text-foreground' : 'text-muted-foreground hover:text-foreground hover:bg-secondary'}`}
+        >
+          <MessageSquare className="h-3.5 w-3.5" />
+          <span>History</span>
+        </button>
+      )}
+    </header>
+  )
+}
+
+// ─── Chat View ────────────────────────────────────────────────────────────────
+
+const SUGGESTIONS = [
+  'Build me a campaign for SaaS companies',
+  'Show blockers to first launch',
+  'Who are my hottest prospects?',
+  'Draft a follow-up for interested replies',
+]
+
+function ChatView({
+  approvals, busyApprovalId, chatBottomRef, chatEntries, chatInput,
+  chatMeta, isChatPending, onApprovalDecision, onInputChange, onSubmit,
+  onSuggestionClick, userName,
+}: {
+  approvals: ApprovalItem[]
+  busyApprovalId: string | null
+  chatBottomRef: React.RefObject<HTMLDivElement>
+  chatEntries: ChatEntry[]
+  chatInput: string
+  chatMeta: string
+  isChatPending: boolean
+  onApprovalDecision: (id: string, d: 'approved' | 'rejected') => Promise<void>
+  onInputChange: (v: string) => void
+  onSubmit: (e: FormEvent<HTMLFormElement>) => Promise<void>
+  onSuggestionClick: (s: string) => Promise<void>
+  userName: string
+}) {
+  const textareaRef = useRef<HTMLTextAreaElement>(null)
+
+  // Auto-resize textarea
+  function handleTextareaInput() {
+    const el = textareaRef.current
+    if (!el) return
+    el.style.height = 'auto'
+    el.style.height = Math.min(el.scrollHeight, 180) + 'px'
+  }
+
+  return (
+    <div className="flex h-full flex-col bg-background">
       {/* Messages */}
       <div className="min-h-0 flex-1 overflow-y-auto">
         {chatEntries.length === 0 ? (
-          <div className="flex h-full flex-col items-center justify-center gap-6 px-6">
-            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary/10 text-primary">
-              <Bot className="h-5 w-5" />
+          /* Empty state */
+          <div className="flex h-full flex-col items-center justify-center gap-8 px-6">
+            <div className="text-center animate-fade-slide-up">
+              <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-2xl bg-primary/10">
+                <Bot className="h-6 w-6 text-primary" />
+              </div>
+              <h2 className="text-lg font-semibold text-foreground">How can I help you?</h2>
+              <p className="mt-1.5 text-sm text-muted-foreground max-w-sm">
+                I'm your AI SDR. Tell me what you want to sell and I'll handle the outreach.
+              </p>
             </div>
-            <div className="text-center">
-              <p className="text-sm font-medium">Ask anything</p>
-              <p className="mt-1 text-xs text-muted-foreground">The right agent is chosen automatically based on your query.</p>
-            </div>
-            <div className="flex flex-wrap justify-center gap-2">
-              {defaultSuggestions.map((s) => (
-                <Button key={s} size="sm" variant="outline" onClick={() => onSuggestionClick(s)}>{s}</Button>
+            <div className="grid grid-cols-2 gap-2.5 w-full max-w-lg animate-fade-slide-up-delay-1">
+              {SUGGESTIONS.map((s) => (
+                <button
+                  key={s}
+                  type="button"
+                  onClick={() => onSuggestionClick(s)}
+                  className="rounded-xl border border-border bg-card px-4 py-3 text-left text-[13px] font-medium text-foreground transition-all hover:border-primary/40 hover:bg-primary-subtle hover:shadow-sm"
+                >
+                  {s}
+                </button>
               ))}
             </div>
           </div>
         ) : (
-          <div className="mx-auto max-w-2xl space-y-4 px-4 py-6">
-            {userEntry ? (
-              <div className="flex justify-end">
-                <div className="max-w-[80%] rounded-2xl bg-primary px-4 py-2.5 text-sm text-primary-foreground">
-                  {userEntry.content}
-                </div>
-              </div>
-            ) : null}
-            {assistantEntry ? (
-              <div className="flex justify-start">
-                <div className="max-w-[85%] rounded-2xl border border-border bg-card px-4 py-3">
-                  {chatMeta && isChatPending ? (
-                    <p className="mb-1.5 text-[11px] text-muted-foreground">{chatMeta}</p>
-                  ) : null}
-                  {assistantEntry.content ? (
-                    <p className="whitespace-pre-wrap text-sm text-foreground leading-relaxed">
-                      {assistantEntry.content}
-                    </p>
+          /* Message thread */
+          <div className="mx-auto max-w-2xl space-y-5 px-4 py-6">
+            {chatEntries.map((entry, i) => (
+              <div key={entry.id} className={`flex gap-3 ${entry.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                {entry.role === 'assistant' && (
+                  <div className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-primary/10">
+                    <Bot className="h-3.5 w-3.5 text-primary" />
+                  </div>
+                )}
+                <div className={`flex flex-col gap-3 ${entry.role === 'user' ? 'items-end' : 'items-start'}`} style={{ maxWidth: '85%' }}>
+                  {entry.role === 'user' ? (
+                    <div className="chat-bubble-user">{entry.content}</div>
                   ) : (
-                    <span className="inline-flex gap-1 text-muted-foreground">
-                      <span className="animate-pulse">·</span>
-                      <span className="animate-pulse [animation-delay:150ms]">·</span>
-                      <span className="animate-pulse [animation-delay:300ms]">·</span>
-                    </span>
+                    <div className="chat-bubble-assistant">
+                      {isChatPending && i === chatEntries.length - 1 && !entry.content ? (
+                        <div className="flex gap-1.5 py-0.5">
+                          <div className="typing-dot" />
+                          <div className="typing-dot" />
+                          <div className="typing-dot" />
+                        </div>
+                      ) : (
+                        <p className="whitespace-pre-wrap leading-relaxed">{entry.content}</p>
+                      )}
+                    </div>
+                  )}
+                  {/* Inline approval cards */}
+                  {entry.role === 'assistant' && entry.approvals && entry.approvals.length > 0 && (
+                    <div className="w-full space-y-3 mt-1">
+                      {entry.approvals.map((approval) => (
+                        <InlineChatApproval
+                          key={approval.id}
+                          approval={approval}
+                          busy={busyApprovalId === approval.id}
+                          onDecision={onApprovalDecision}
+                        />
+                      ))}
+                    </div>
                   )}
                 </div>
+                {entry.role === 'user' && (
+                  <div className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-secondary text-[11px] font-bold text-foreground">
+                    {userName.slice(0, 1).toUpperCase()}
+                  </div>
+                )}
               </div>
-            ) : null}
+            ))}
+            <div ref={chatBottomRef} />
           </div>
         )}
       </div>
 
       {/* Input bar */}
-      <div className="shrink-0 border-t border-border bg-card px-4 py-3">
-        <form className="mx-auto flex max-w-2xl gap-2" onSubmit={onPromptSubmit}>
-          <Textarea
-            className="h-[52px] flex-1 resize-none text-sm"
-            placeholder="Ask about your pipeline, blockers, or next steps…"
-            value={chatPrompt}
-            onChange={(e) => onPromptChange(e.target.value)}
+      <div className="shrink-0 px-4 py-4">
+        <form
+          className="chat-input-bar mx-auto flex max-w-2xl flex-col gap-0"
+          onSubmit={onSubmit}
+        >
+          <textarea
+            ref={textareaRef}
+            rows={1}
+            className="w-full resize-none bg-transparent px-4 pt-3.5 pb-2 text-sm text-foreground placeholder:text-muted-foreground outline-none"
+            placeholder="Build me a campaign and sequence for…"
+            value={chatInput}
+            onChange={(e) => { onInputChange(e.target.value); handleTextareaInput() }}
             onKeyDown={(e) => {
               if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault()
@@ -1110,10 +1039,213 @@ function AiPanel({
               }
             }}
           />
-          <Button className="h-[52px] px-5" disabled={isChatPending} type="submit">
-            {isChatPending ? <CircleDot className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
-          </Button>
+          <div className="flex items-center justify-between px-3 pb-2.5">
+            <div className="flex items-center gap-1">
+              <span className="text-[11px] text-muted-foreground">↵ send · ⇧↵ newline</span>
+            </div>
+            <button
+              type="submit"
+              disabled={isChatPending || !chatInput.trim()}
+              className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary text-white transition-all hover:bg-primary/90 disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              {isChatPending ? (
+                <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-white border-t-transparent" />
+              ) : (
+                <svg className="h-3.5 w-3.5" viewBox="0 0 16 16" fill="none">
+                  <path d="M14 2L8 8M14 2H9M14 2V7" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
+                  <path d="M8 2H3a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1V8" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/>
+                </svg>
+              )}
+            </button>
+          </div>
         </form>
+      </div>
+    </div>
+  )
+}
+
+// ─── Inline Approval Card ─────────────────────────────────────────────────────
+
+function InlineChatApproval({ approval, busy, onDecision }: {
+  approval: ApprovalItem
+  busy: boolean
+  onDecision: (id: string, d: 'approved' | 'rejected') => Promise<void>
+}) {
+  const isDone = approval.status !== 'pending'
+
+  return (
+    <div className="approval-inline animate-fade-slide-up">
+      {/* Header */}
+      <div className="flex items-center justify-between border-b border-border px-4 py-3">
+        <div className="flex items-center gap-2">
+          <span className={`inline-flex h-1.5 w-1.5 rounded-full ${isDone ? 'bg-success' : 'bg-warning'}`} />
+          <span className="text-[12px] font-semibold text-foreground">{approval.title}</span>
+          <Badge variant={approval.type === 'batch_send' ? 'primary' : 'outline'} className="text-[10px] px-1.5 py-0">
+            {approval.type.replace('_', ' ')}
+          </Badge>
+        </div>
+        <Badge variant={isDone ? (approval.status === 'approved' ? 'success' : 'danger') : 'warning'}>
+          {approval.status}
+        </Badge>
+      </div>
+
+      {/* Samples */}
+      <div className="px-4 py-3 space-y-2.5">
+        <p className="text-[11px] text-muted-foreground">{approval.summary}</p>
+        {approval.samples.slice(0, 2).map((s) => (
+          <div key={s.contact_id} className="rounded-lg bg-secondary/60 px-3 py-2.5">
+            <div className="flex items-center justify-between mb-1">
+              <span className="text-[12px] font-semibold text-foreground">{s.contact_name}</span>
+              <span className="text-[11px] text-muted-foreground">{s.company}</span>
+            </div>
+            <p className="text-[12px] font-medium text-foreground mb-0.5">{s.subject}</p>
+            <p className="text-[11px] text-muted-foreground line-clamp-2 leading-relaxed">{s.body}</p>
+          </div>
+        ))}
+      </div>
+
+      {/* Actions */}
+      {!isDone && (
+        <div className="flex items-center gap-2 border-t border-border px-4 py-3">
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => onDecision(approval.id, 'rejected')}
+            className="flex-1 rounded-lg border border-border bg-card py-2 text-[13px] font-medium text-foreground transition-colors hover:bg-secondary disabled:opacity-50"
+          >
+            {busy ? 'Working…' : 'Revise'}
+          </button>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => onDecision(approval.id, 'approved')}
+            className="flex-1 rounded-lg bg-primary py-2 text-[13px] font-medium text-white transition-colors hover:bg-primary/90 disabled:opacity-50"
+          >
+            {busy ? 'Working…' : 'Approve & send'}
+          </button>
+        </div>
+      )}
+      {isDone && (
+        <div className="flex items-center gap-1.5 border-t border-border px-4 py-2.5">
+          <span className={`text-[12px] font-medium ${approval.status === 'approved' ? 'text-success-text' : 'text-danger-text'}`}>
+            {approval.status === 'approved' ? '✓ Approved — campaign staged' : '✗ Marked for revision'}
+          </span>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ─── Analytics View ───────────────────────────────────────────────────────────
+
+function AnalyticsView({ activity, campaign, pendingApprovals, workspace, onRunPrompt }: {
+  activity: OperatorEvent[]
+  campaign: CampaignSummary | null
+  pendingApprovals: ApprovalItem[]
+  workspace: WorkspaceSummary
+  onRunPrompt: (p: string) => Promise<void>
+}) {
+  return (
+    <div className="h-full overflow-y-auto">
+      <div className="mx-auto max-w-2xl space-y-6 px-6 py-6">
+        {/* Metrics */}
+        <div className="grid grid-cols-3 gap-3">
+          {workspace.metrics.map((m) => (
+            <div key={m.label} className="rounded-xl border border-border bg-card p-4">
+              <p className="text-[11px] font-medium text-muted-foreground uppercase tracking-wide">{m.label}</p>
+              <p className="mt-2 text-2xl font-bold tracking-tight text-foreground">{m.value}</p>
+              <p className="mt-0.5 text-[11px] text-muted-foreground">{m.caption}</p>
+            </div>
+          ))}
+        </div>
+
+        {/* Pending approvals */}
+        {pendingApprovals.length > 0 && (
+          <div>
+            <p className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Needs your attention</p>
+            <div className="space-y-2">
+              {pendingApprovals.map((a) => (
+                <div key={a.id} className="flex items-center justify-between rounded-xl border border-warning/30 bg-warning-subtle px-4 py-3">
+                  <div>
+                    <p className="text-[13px] font-semibold text-foreground">{a.title}</p>
+                    <p className="mt-0.5 text-[12px] text-muted-foreground">{a.summary}</p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => onRunPrompt(`Review approval: ${a.title}`)}
+                    className="ml-4 rounded-lg bg-warning px-3 py-1.5 text-[12px] font-semibold text-white hover:bg-warning/90"
+                  >
+                    Review
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Activity */}
+        <div>
+          <p className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Recent activity</p>
+          {activity.length > 0 ? (
+            <div className="divide-y divide-border rounded-xl border border-border bg-card overflow-hidden">
+              {activity.slice(0, 8).map((e) => (
+                <div key={e.id} className="flex items-center gap-3 px-4 py-3">
+                  <div className="h-1.5 w-1.5 shrink-0 rounded-full bg-primary/60" />
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-[13px] font-medium text-foreground">{e.summary}</p>
+                    <p className="text-[11px] text-muted-foreground">{new Date(e.created_at).toLocaleString()}</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="rounded-xl border border-dashed border-border px-4 py-8 text-center">
+              <p className="text-sm text-muted-foreground">No activity yet — start a campaign</p>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ─── Past Convos Panel ────────────────────────────────────────────────────────
+
+function PastConvosPanel({ convos, onSelect, onClose }: {
+  convos: ConvoSummary[]
+  onSelect: (id: string) => void
+  onClose: () => void
+}) {
+  return (
+    <div className="past-convos-panel flex w-72 shrink-0 flex-col animate-slide-in-right">
+      <div className="flex h-[49px] shrink-0 items-center justify-between border-b border-border px-4">
+        <span className="text-[13px] font-semibold">History</span>
+        <button type="button" onClick={onClose} className="text-muted-foreground hover:text-foreground">
+          <PanelRightOpen className="h-4 w-4" />
+        </button>
+      </div>
+      <div className="flex-1 overflow-y-auto p-3">
+        {convos.length === 0 ? (
+          <div className="flex h-full flex-col items-center justify-center gap-2 text-center">
+            <MessageSquare className="h-6 w-6 text-muted-foreground/30" />
+            <p className="text-[12px] text-muted-foreground">Past conversations will appear here</p>
+          </div>
+        ) : (
+          <div className="space-y-1">
+            {convos.map((c) => (
+              <button
+                key={c.id}
+                type="button"
+                onClick={() => onSelect(c.id)}
+                className="w-full rounded-lg px-3 py-2.5 text-left transition-colors hover:bg-secondary"
+              >
+                <p className="truncate text-[13px] font-medium text-foreground">{c.title}</p>
+                <p className="mt-0.5 truncate text-[11px] text-muted-foreground">{c.preview}</p>
+                <p className="mt-0.5 text-[10px] text-muted-foreground/60">{c.timestamp.toLocaleDateString()}</p>
+              </button>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   )

@@ -46,7 +46,12 @@ export const authMiddleware = createMiddleware<AppEnv>(async (c, next) => {
     return c.json({ error: 'Unauthorized' }, 401)
   }
 
-  if (env.devAuth.bearerToken && token === env.devAuth.bearerToken) {
+  // Dev auth bypass — ONLY allowed when NODE_ENV is explicitly 'development'
+  if (
+    process.env.NODE_ENV === 'development' &&
+    env.devAuth.bearerToken &&
+    token === env.devAuth.bearerToken
+  ) {
     const devUserId = env.devAuth.userId
     const devOrgId = env.devAuth.orgId
     const claims: AuthClaims = {

@@ -86,7 +86,7 @@ export class OutreachSmtpPool {
           user: inbox.smtp_user,
           pass: decrypt(inbox.smtp_pass_enc),
         },
-        tls: { rejectUnauthorized: false },
+        tls: { rejectUnauthorized: true },
         pool: true,
         maxConnections: 3,
         rateLimit: 2,  // max 2 msgs/sec per connection
@@ -122,7 +122,7 @@ export class OutreachSmtpPool {
 
     const start = this.cursor
     do {
-      const entry = this.entries[this.cursor % this.entries.length]
+      const entry = this.entries[this.cursor % this.entries.length]!
       this.cursor = (this.cursor + 1) % this.entries.length
       if (entry.sentToday < entry.dailyCap) {
         return { transporter: entry.transporter, inbox: entry.inbox }
@@ -179,9 +179,19 @@ export class OutreachSmtpPool {
       // Record the outreach send atomically (upsert avoids a read-then-write race)
       const db = getSupabaseAdmin()
       const today = new Date().toISOString().slice(0, 10)
-      await db.rpc('increment_outreach_sends', { p_inbox_id: inbox.id, p_date: today, p_target: inbox.daily_target })
+      const { error: rpcErr } = await db.rpc('increment_outreach_sends', {
+        p_inbox_id: inbox.id,
+        p_date: today,
+        p_target: inbox.daily_target,
+      })
 
-      // Increment sentToday in memory
+      if (rpcErr) {
+        // Email was sent but quota tracking failed — log it.
+        // Still count in-memory to prevent over-sending; reconciles on next pool load.
+        console.error(`[smtp-pool] increment_outreach_sends failed for ${inbox.email}:`, rpcErr.message)
+      }
+
+      // Always increment in-memory (safer to over-count than under-count)
       const entry = this.entries.find((e) => e.inbox.id === inbox.id)
       if (entry) entry.sentToday++
 
@@ -194,12 +204,15 @@ export class OutreachSmtpPool {
       if (isInfraError) {
         // The inbox itself is broken — mark it so the user knows
         const db = getSupabaseAdmin()
-        await db
+        const { error: updateErr } = await db
           .from('warming_inboxes')
-          .update({ status: 'error', error_note: msg, updated_at: new Date().toISOString() })
+          .update({ status: 'error', error_note: msg.slice(0, 500), updated_at: new Date().toISOString() })
           .eq('id', inbox.id)
+
+        if (updateErr) {
+          console.error(`[smtp-pool] Failed to mark inbox ${inbox.email} as error:`, updateErr.message)
+        }
       }
-      // Hard bounce: do NOT touch the inbox status — the problem is the recipient, not us
 
       return { ok: false, from: inbox.email, error: msg, bounceType }
     }
@@ -220,7 +233,11 @@ export class OutreachSmtpPool {
   /** Release all transporter connections */
   close() {
     for (const entry of this.entries) {
-      entry.transporter.close?.()
+      try {
+        entry.transporter.close?.()
+      } catch {
+        // Ignore close errors — pool is being discarded
+      }
     }
   }
 }

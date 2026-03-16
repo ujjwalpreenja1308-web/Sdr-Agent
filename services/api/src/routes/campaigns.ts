@@ -1,5 +1,6 @@
 import { Hono } from 'hono'
 
+import { validateBody, webhookRegisterSchema } from '../lib/validation.js'
 import { logWorkspaceEvent } from '../lib/activity.js'
 import { beginExecution, executionKey, finishExecution } from '../lib/execution-runs.js'
 import { launchInstantlyCampaign } from '../lib/instantly.js'
@@ -140,7 +141,7 @@ campaignsRoutes.get('/api/webhooks/instantly/:workspaceId', async (c) => {
 })
 
 campaignsRoutes.post('/api/webhooks/instantly/register', async (c) => {
-  const payload = await c.req.json<{ workspace_id: string; target_url: string }>()
+  const payload = await validateBody(c, webhookRegisterSchema)
   await ensureWorkspaceRecord(payload.workspace_id, c.get('orgId'))
   const store = getRuntimeStore()
   await store.hydrateWorkspace(payload.workspace_id, c.get('orgId'))

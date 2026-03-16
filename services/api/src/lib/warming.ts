@@ -83,14 +83,16 @@ const WARMING_REPLIES = [
 ]
 
 function randomItem<T>(arr: T[]): T {
-  return arr[Math.floor(Math.random() * arr.length)]
+  return arr[Math.floor(Math.random() * arr.length)]!
 }
 
 function shuffled<T>(arr: T[]): T[] {
   const copy = [...arr]
   for (let i = copy.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1))
-    ;[copy[i], copy[j]] = [copy[j], copy[i]]
+    const tmp = copy[i]!
+    copy[i] = copy[j]!
+    copy[j] = tmp
   }
   return copy
 }
@@ -144,7 +146,7 @@ function buildTransporter(inbox: WarmingInbox): Transporter {
       user: inbox.smtp_user,
       pass: decrypt(inbox.smtp_pass_enc),
     },
-    tls: { rejectUnauthorized: false },
+    tls: { rejectUnauthorized: true },
     connectionTimeout: 30_000,
     socketTimeout: 60_000,
     greetingTimeout: 15_000,
@@ -440,10 +442,12 @@ export async function runWarmingCycle(workspaceId: string): Promise<WarmingRunSu
             })
 
             if (engagement.landedInSpam) {
-              await db.rpc('increment_spam_hits', { p_inbox_id: sender.id, p_date: today })
+              const { error: spamErr } = await db.rpc('increment_spam_hits', { p_inbox_id: sender.id, p_date: today })
+              if (spamErr) console.error(`[warming] increment_spam_hits failed for ${sender.email}:`, spamErr.message)
             }
             if (engagement.replied) {
-              await db.rpc('increment_actual_replies', { p_inbox_id: capturedRecipient.id, p_date: today })
+              const { error: replyErr } = await db.rpc('increment_actual_replies', { p_inbox_id: capturedRecipient.id, p_date: today })
+              if (replyErr) console.error(`[warming] increment_actual_replies failed for ${capturedRecipient.email}:`, replyErr.message)
             }
           } catch (err) {
             console.warn(`[warming] Engagement task failed for ${capturedRecipient.email}:`, err)
@@ -488,8 +492,18 @@ export async function runWarmingCycle(workspaceId: string): Promise<WarmingRunSu
       .eq('id', sender.id)
   }
 
-  // Wait for all engagement tasks (IMAP + reply sends)
-  await Promise.allSettled(engagementTasks)
+  // Wait for all engagement tasks (IMAP + reply sends) with a hard timeout
+  // so the warming cycle completes even if IMAP connections hang
+  const ENGAGEMENT_TIMEOUT_MS = 5 * 60 * 1000 // 5 minutes max for all engagement
+  await Promise.race([
+    Promise.allSettled(engagementTasks),
+    new Promise<void>((resolve) => {
+      setTimeout(() => {
+        console.warn(`[warming] Engagement tasks timed out after ${ENGAGEMENT_TIMEOUT_MS / 1000}s for workspace ${workspaceId}`)
+        resolve()
+      }, ENGAGEMENT_TIMEOUT_MS)
+    }),
+  ])
 
   // Recalculate health scores, then auto-pause inboxes below threshold
   await refreshHealthScores(workspaceId, db)
@@ -603,7 +617,7 @@ export async function testSmtpConnection(
     port,
     secure,
     auth: { user, pass },
-    tls: { rejectUnauthorized: false },
+    tls: { rejectUnauthorized: true },
     connectionTimeout: 30_000,
     socketTimeout: 60_000,
     greetingTimeout: 15_000,

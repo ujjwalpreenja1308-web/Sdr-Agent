@@ -1,4 +1,5 @@
 import { fileURLToPath } from 'node:url'
+import { timingSafeEqual } from 'node:crypto'
 
 import { serve } from '@hono/node-server'
 import { Hono } from 'hono'
@@ -41,45 +42,66 @@ export function createApp(): Hono<AppEnv> {
   app.get('/health', (c) => c.json({ status: 'ok' }))
   app.route('/', webhooksRoutes)
 
+  // ─── Cron helpers ──────────────────────────────────────────────────────────
+
+  /** Constant-time comparison to prevent timing attacks on cron secret */
+  function verifyCronSecret(provided: string | undefined): boolean {
+    if (!provided || !env.warmingCronSecret) return false
+    try {
+      const a = Buffer.from(provided, 'utf8')
+      const b = Buffer.from(env.warmingCronSecret, 'utf8')
+      if (a.length !== b.length) return false
+      return timingSafeEqual(a, b)
+    } catch {
+      return false
+    }
+  }
+
+  /** Run an async fn per workspace with a hard timeout per workspace */
+  async function forEachWorkspace<T>(
+    fn: (workspaceId: string) => Promise<T>,
+    timeoutMs = 120_000,
+  ): Promise<{ workspace_id: string; result?: T; error?: string }[]> {
+    const { getSupabaseAdmin } = await import('./lib/supabase.js')
+    const db = getSupabaseAdmin()
+    const { data: workspaces } = await db.from('workspaces').select('id')
+    if (!workspaces || workspaces.length === 0) return []
+
+    const results = await Promise.allSettled(
+      workspaces.map(async (w: { id: string }) => {
+        const timeout = new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error(`Timeout after ${timeoutMs / 1000}s`)), timeoutMs),
+        )
+        const result = await Promise.race([fn(w.id), timeout])
+        return { workspace_id: w.id, result }
+      }),
+    )
+
+    return results.map((r, i) =>
+      r.status === 'fulfilled'
+        ? r.value
+        : { workspace_id: workspaces[i]!.id, error: String(r.reason) },
+    )
+  }
+
   // Internal cron: DigitalOcean calls this hourly to advance email sequences
   app.post('/internal/sequences/tick-all', async (c) => {
-    const secret = c.req.header('x-cron-secret')
-    if (!secret || secret !== env.warmingCronSecret) {
+    if (!verifyCronSecret(c.req.header('x-cron-secret'))) {
       return c.json({ error: 'Unauthorized' }, 401)
     }
     const { runSequenceTick } = await import('./lib/sequencing.js')
-    const { getSupabaseAdmin } = await import('./lib/supabase.js')
-    const db = getSupabaseAdmin()
-    const { data: workspaces } = await db.from('workspaces').select('id')
-    if (!workspaces) return c.json({ ok: true, processed: 0 })
-    const results = await Promise.allSettled(
-      workspaces.map((w: { id: string }) => runSequenceTick(w.id)),
-    )
-    const summaries = results.map((r) =>
-      r.status === 'fulfilled' ? r.value : { error: String(r.reason) },
-    )
-    return c.json({ ok: true, processed: workspaces.length, summaries })
+    const summaries = await forEachWorkspace((id) => runSequenceTick(id), 120_000)
+    return c.json({ ok: true, processed: summaries.length, summaries })
   })
 
   // Internal cron: DigitalOcean calls this daily at 08:00 UTC
-  // Authenticated by shared secret header (no JWT required)
   app.post('/internal/warming/run-all', async (c) => {
-    const secret = c.req.header('x-cron-secret')
-    if (!secret || secret !== env.warmingCronSecret) {
+    if (!verifyCronSecret(c.req.header('x-cron-secret'))) {
       return c.json({ error: 'Unauthorized' }, 401)
     }
     const { runWarmingCycle } = await import('./lib/warming.js')
-    const { getSupabaseAdmin } = await import('./lib/supabase.js')
-    const db = getSupabaseAdmin()
-    const { data: workspaces } = await db.from('workspaces').select('id')
-    if (!workspaces) return c.json({ ok: true, processed: 0 })
-    const results = await Promise.allSettled(
-      workspaces.map((w: { id: string }) => runWarmingCycle(w.id)),
-    )
-    const summaries = results.map((r) =>
-      r.status === 'fulfilled' ? r.value : { error: String(r.reason) },
-    )
-    return c.json({ ok: true, processed: workspaces.length, summaries })
+    const summaries = await forEachWorkspace((id) => runWarmingCycle(id), 300_000)
+    return c.json({ ok: true, processed: summaries.length, summaries })
   })
 
   app.use('*', authMiddleware)

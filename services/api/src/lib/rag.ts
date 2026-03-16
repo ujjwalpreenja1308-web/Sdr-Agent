@@ -62,7 +62,8 @@ async function embedBatch(texts: string[]): Promise<number[][]> {
 
 /** Embed a single query string. */
 async function embedQuery(text: string): Promise<number[]> {
-  return Settings.embedModel.getQueryEmbedding(text)
+  const result = await Settings.embedModel.getQueryEmbedding(text as unknown as Parameters<typeof Settings.embedModel.getQueryEmbedding>[0])
+  return result ?? []
 }
 
 // ─── Public types ─────────────────────────────────────────────────────────────

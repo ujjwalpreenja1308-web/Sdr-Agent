@@ -170,10 +170,21 @@ export async function runSequenceTick(workspaceId: string): Promise<SequenceTick
 
   // Immediately claim all fetched rows so a concurrent tick won't pick them up
   const claimedIds = enrollments.map((e) => e.id)
-  await db
+  const { error: claimErr } = await db
     .from('sequence_enrollments')
     .update({ last_tick_at: triggeredAt })
     .in('id', claimedIds)
+
+  if (claimErr) {
+    // If we can't atomically claim, bail — a concurrent tick may process these
+    return {
+      workspace_id: workspaceId,
+      triggered_at: triggeredAt,
+      emails_sent: 0,
+      enrollments_completed: 0,
+      errors: [`Failed to claim enrollments: ${claimErr.message}`],
+    }
+  }
 
   // ── 2. Batch-load all steps ────────────────────────────────────────────────
   const sequenceIds = [...new Set(enrollments.map((e) => e.sequence_id))]
@@ -221,11 +232,15 @@ export async function runSequenceTick(workspaceId: string): Promise<SequenceTick
 
     if (!step) {
       // No step at this position — sequence is complete
-      await db
+      const { error: completeErr } = await db
         .from('sequence_enrollments')
         .update({ status: 'completed', completed_at: triggeredAt })
         .eq('id', enrollment.id)
-      enrollmentsCompleted++
+      if (completeErr) {
+        errors.push(`Enrollment ${enrollment.id}: failed to mark completed: ${completeErr.message}`)
+      } else {
+        enrollmentsCompleted++
+      }
       continue
     }
 
@@ -261,7 +276,7 @@ export async function runSequenceTick(workspaceId: string): Promise<SequenceTick
     const nowInboxId = assignedId ?? pick.inbox.id
 
     // Log the send regardless of outcome
-    await db.from('sequence_send_logs').insert({
+    const { error: logErr } = await db.from('sequence_send_logs').insert({
       enrollment_id: enrollment.id,
       step_id:       step.id,
       contact_id:    enrollment.contact_id,
@@ -274,13 +289,16 @@ export async function runSequenceTick(workspaceId: string): Promise<SequenceTick
       error:         sendResult.ok ? null : (sendResult.error ?? null),
       bounce_type:   sendResult.ok ? null : (sendResult.bounceType ?? null),
     })
+    if (logErr) {
+      errors.push(`Failed to log send for ${contact.email}: ${logErr.message}`)
+    }
 
     if (!sendResult.ok) {
       errors.push(`Send failed for ${contact.email}: ${sendResult.error}`)
       const bounceType = sendResult.bounceType
 
       // ── Hard bounce: stop immediately, mark contact's email as invalid ───────
-      if (bounceType === 'hard' || (sendResult.error && !isBounceError(sendResult.error) === false && bounceType === 'hard')) {
+      if (bounceType === 'hard') {
         await db
           .from('sequence_enrollments')
           .update({
@@ -319,7 +337,7 @@ export async function runSequenceTick(workspaceId: string): Promise<SequenceTick
           .eq('id', enrollment.id)
         errors.push(`Enrollment ${enrollment.id} bounced after ${newAttempts} soft failures`)
       } else {
-        const backoffHours = SOFT_BACKOFF_HOURS[Math.min(newAttempts - 1, SOFT_BACKOFF_HOURS.length - 1)]
+        const backoffHours = SOFT_BACKOFF_HOURS[Math.min(newAttempts - 1, SOFT_BACKOFF_HOURS.length - 1)] ?? 16
         const retryAt = new Date(Date.now() + backoffHours * 60 * 60 * 1000).toISOString()
         await db
           .from('sequence_enrollments')
@@ -342,18 +360,21 @@ export async function runSequenceTick(workspaceId: string): Promise<SequenceTick
       const nextSendAt = new Date(
         Date.now() + nextStep.delay_days * 24 * 60 * 60 * 1000,
       ).toISOString()
-      await db
+      const { error: advanceErr } = await db
         .from('sequence_enrollments')
         .update({
           current_step:      enrollment.current_step + 1,
           next_send_at:      nextSendAt,
-          send_attempts:     0,               // reset counter on success
+          send_attempts:     0,
           assigned_inbox_id: nowInboxId,
         })
         .eq('id', enrollment.id)
+      if (advanceErr) {
+        errors.push(`Enrollment ${enrollment.id}: failed to advance step: ${advanceErr.message}`)
+      }
     } else {
       // Last step — sequence complete
-      await db
+      const { error: finishErr } = await db
         .from('sequence_enrollments')
         .update({
           status:            'completed',
@@ -363,7 +384,11 @@ export async function runSequenceTick(workspaceId: string): Promise<SequenceTick
           assigned_inbox_id: nowInboxId,
         })
         .eq('id', enrollment.id)
-      enrollmentsCompleted++
+      if (finishErr) {
+        errors.push(`Enrollment ${enrollment.id}: failed to mark completed: ${finishErr.message}`)
+      } else {
+        enrollmentsCompleted++
+      }
     }
   }
 

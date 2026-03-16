@@ -275,7 +275,7 @@ function nameFromLinkedInSlug(url: string): string | null {
   const match = /linkedin\.com\/in\/([A-Za-z][A-Za-z-]+)/.exec(url)
   if (!match) return null
   // Drop trailing alphanumeric IDs (e.g. "-a1b2c3")
-  const slug = match[1].replace(/-[a-z0-9]{4,}$/i, '')
+  const slug = match[1]!.replace(/-[a-z0-9]{4,}$/i, '')
   const parts = slug.split('-').filter((p) => p.length > 1)
   if (parts.length < 2) return null
   return parts.map((p) => p.charAt(0).toUpperCase() + p.slice(1)).join(' ')
@@ -293,7 +293,7 @@ async function resolveLinkedInViaSerper(query: string, apiKey: string): Promise<
   for (const result of asArray(data.organic)) {
     const link = asString(asRecord(result)?.link)
     if (link && /linkedin\.com\/in\//i.test(link)) {
-      return link.split('?')[0].replace(/\/$/, '')
+      return link.split('?')[0]!.replace(/\/$/, '')
     }
   }
   return null
@@ -308,7 +308,7 @@ async function resolveLinkedInViaDuckDuckGo(query: string): Promise<string | nul
   const html = await response.text()
   const matches = html.match(LINKEDIN_URL_RE)
   if (!matches || matches.length === 0) return null
-  return matches[0].split('?')[0].replace(/\/$/, '')
+  return matches[0]!.split('?')[0]!.replace(/\/$/, '')
 }
 
 async function resolveLinkedIn(
@@ -352,7 +352,7 @@ async function resolveLinkedInForProspects(
       }),
     )
     for (let j = 0; j < batch.length; j++) {
-      resolved.set(batch[j], results[j] ?? null)
+      resolved.set(batch[j]!, results[j] ?? null)
     }
   }
 

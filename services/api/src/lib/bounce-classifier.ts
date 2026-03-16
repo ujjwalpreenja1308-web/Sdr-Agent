@@ -71,16 +71,24 @@ const SOFT_OVERRIDE_PATTERNS: RegExp[] = [
 export function classifyBounce(error: Error | string): BounceType {
   const msg = typeof error === 'string' ? error : (error.message ?? '')
 
+  // Also check for nodemailer's numeric `responseCode` property on the error
+  const responseCode = typeof error === 'object' && error !== null && 'responseCode' in error
+    ? (error as { responseCode?: number }).responseCode
+    : undefined
+
   // 1. Soft-override check: if ANY soft signal present, it's soft regardless of 5xx
   for (const pattern of SOFT_OVERRIDE_PATTERNS) {
     if (pattern.test(msg)) return 'soft'
   }
 
-  // 2. Try to extract an explicit numeric SMTP response code
-  const codeMatch = msg.match(/\b([45]\d{2})\b/)
-  if (codeMatch) {
-    const code = parseInt(codeMatch[1], 10)
+  // 2. Try to extract SMTP response code — from error property first, then message text
+  let code: number | undefined = responseCode
+  if (!code) {
+    const codeMatch = msg.match(/\b([45]\d{2})\b/)
+    if (codeMatch?.[1]) code = parseInt(codeMatch[1], 10)
+  }
 
+  if (code) {
     // 4xx = always soft
     if (code >= 400 && code < 500) return 'soft'
 
@@ -107,10 +115,16 @@ export function classifyBounce(error: Error | string): BounceType {
  */
 export function isBounceError(error: Error | string): boolean {
   const msg = typeof error === 'string' ? error : (error.message ?? '')
+
+  // Also check responseCode on the error object
+  const responseCode = typeof error === 'object' && error !== null && 'responseCode' in error
+    ? (error as { responseCode?: number }).responseCode
+    : undefined
+
   // Auth failures = not a bounce; they indicate inbox misconfiguration
-  if (/auth(entication)?\s+(fail|error|invalid|required)/i.test(msg)) return false
+  if (/auth(entication)?\s*(fail|error|invalid|required)/i.test(msg)) return false
   if (/invalid\s+(login|credentials|password)/i.test(msg)) return false
-  if (/535\s/.test(msg)) return false  // 535 = authentication failed
+  if (/\b535\b/.test(msg) || responseCode === 535) return false  // 535 = authentication failed
   // Connection-level failures = not a bounce
   if (/ENOTFOUND|ECONNREFUSED|ECONNRESET|ETIMEDOUT|EHOSTUNREACH/i.test(msg)) return false
   // Everything else may be a bounce
