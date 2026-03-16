@@ -1,47 +1,46 @@
 /**
  * sequencing.ts — self-owned multi-step email sequencing engine
  *
- * Reliability guarantees (v2):
+ * Reliability guarantees:
  *
  * 1. No double-send from concurrent ticks
  *    The tick immediately writes last_tick_at = now() for every enrollment it
- *    claims before doing any work.  The query only selects rows where
- *    last_tick_at IS NULL or last_tick_at < now() - 10 min, so a second
- *    concurrent tick skips already-claimed rows.
+ *    claims before doing any work. The query only selects rows where
+ *    last_tick_at IS NULL or last_tick_at < now() - 10 min.
  *
  * 2. No inbox mismatch between template vars and actual From: address
  *    We call pool.pickById() / pool.next() once to obtain the pick, build
  *    template vars from that same pick, then call pool.sendWith(pick, …).
- *    The old bug was: pool.next() for vars + pool.send() (which calls next()
- *    again internally) → two different inboxes.
  *
  * 3. Sticky inbox assignment
- *    On first send, the inbox is stored in enrollment.assigned_inbox_id.
- *    Every subsequent step in the same sequence tries pool.pickById() first
- *    so the contact always sees the same From: address.  Falls back to
- *    round-robin if the assigned inbox is full or removed.
+ *    On first send the inbox is stored in enrollment.assigned_inbox_id.
+ *    Every subsequent step tries pool.pickById() first so the contact always
+ *    sees the same From: address. Falls back to round-robin if the inbox is
+ *    full or removed.
  *
- * 4. Bounded retry on transient send failures
- *    send_attempts tracks consecutive failures on the current step.
- *    After MAX_SEND_ATTEMPTS (3) the enrollment is marked 'bounced' so a
- *    permanently-broken address never consumes inbox quota again.
- *    On success the counter is reset to 0 for the next step.
+ * 4. Hard vs soft bounce classification
+ *    Hard bounce (permanent 5xx / "user unknown"): enrollment immediately
+ *    marked 'bounced' (no retries) and the contact's email is flagged 'invalid'
+ *    so future sequences skip it automatically.
+ *    Soft bounce (transient 4xx / quota / network): retry up to MAX_SEND_ATTEMPTS
+ *    times with increasing back-off via next_send_at.
+ *    The INBOX is NOT penalised for hard bounces — the problem is the recipient.
  *
- * 5. Batch-loaded steps (no N+1)
+ * 5. No open tracking
+ *    Outreach emails contain no tracking pixels, no redirect links, and no
+ *    open-tracking headers. open_rate is removed from SequenceStats.
+ *
+ * 6. Batch-loaded steps (no N+1)
  *    All steps for every affected sequence are loaded in two bulk queries
- *    before the main loop.  No per-enrollment step fetches inside the loop.
- *
- * 6. Fixed getSequenceStats
- *    sequence_send_logs has no sequence_id column; the old code queried it
- *    directly and always got 0.  We now load enrollment IDs first and filter
- *    the log table with .in('enrollment_id', ids).
+ *    before the main loop.
  *
  * 7. Parallel getSequenceSummaries
- *    Stats for each sequence are now fetched concurrently with Promise.all.
+ *    Stats for each sequence are fetched concurrently with Promise.all.
  */
 
 import { getSupabaseAdmin } from './supabase.js'
 import { OutreachSmtpPool } from './smtp-pool.js'
+import { classifyBounce, isBounceError } from './bounce-classifier.js'
 import type {
   Sequence,
   SequenceStep,
@@ -53,8 +52,11 @@ import type {
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-/** Mark enrollment 'bounced' after this many consecutive send failures */
-const MAX_SEND_ATTEMPTS = 3
+/** Mark enrollment 'bounced' after this many consecutive SOFT send failures */
+const MAX_SOFT_ATTEMPTS = 5
+
+/** Soft-bounce back-off delays (hours) — increases with each failed attempt */
+const SOFT_BACKOFF_HOURS = [1, 2, 4, 8, 16]
 
 /** Soft concurrency lock window — don't re-process a row touched within this many minutes */
 const TICK_LOCK_MINUTES = 10
@@ -138,8 +140,6 @@ export async function runSequenceTick(workspaceId: string): Promise<SequenceTick
   let enrollmentsCompleted = 0
 
   // ── 1. Claim due enrollments atomically ────────────────────────────────────
-  // Only pick rows that haven't been touched by another tick in the last
-  // TICK_LOCK_MINUTES minutes.  We use ISO string arithmetic on the filter.
   const lockCutoff = new Date(Date.now() - TICK_LOCK_MINUTES * 60 * 1000).toISOString()
 
   const { data: enrollments, error: fetchErr } = await db
@@ -168,17 +168,14 @@ export async function runSequenceTick(workspaceId: string): Promise<SequenceTick
     return { workspace_id: workspaceId, triggered_at: triggeredAt, emails_sent: 0, enrollments_completed: 0, errors: [] }
   }
 
-  // Immediately claim all fetched rows by writing last_tick_at so a concurrent
-  // tick won't pick them up.
+  // Immediately claim all fetched rows so a concurrent tick won't pick them up
   const claimedIds = enrollments.map((e) => e.id)
   await db
     .from('sequence_enrollments')
     .update({ last_tick_at: triggeredAt })
     .in('id', claimedIds)
 
-  // ── 2. Batch-load all steps we might need ──────────────────────────────────
-  // Collect the unique sequence IDs, then load ALL their steps in one query.
-  // Build a lookup map: sequenceId → position → step
+  // ── 2. Batch-load all steps ────────────────────────────────────────────────
   const sequenceIds = [...new Set(enrollments.map((e) => e.sequence_id))]
   const { data: allSteps } = await db
     .from('sequence_steps')
@@ -232,7 +229,7 @@ export async function runSequenceTick(workspaceId: string): Promise<SequenceTick
       continue
     }
 
-    // ── 5. Pick inbox (sticky assignment) ────────────────────────────────────
+    // ── 5. Pick inbox (sticky assignment) ─────────────────────────────────────
     const assignedId = enrollment.assigned_inbox_id as string | null
     const pick = assignedId ? pool.pickById(assignedId) : pool.next()
 
@@ -252,6 +249,7 @@ export async function runSequenceTick(workspaceId: string): Promise<SequenceTick
         to: `"${vars.fullName || contact.email}" <${contact.email}>`,
         subject,
         text: body,
+        // No open-tracking headers, no pixel hooks
         headers: {
           'X-Sequence-Id':   enrollment.sequence_id,
           'X-Enrollment-Id': enrollment.id,
@@ -259,6 +257,8 @@ export async function runSequenceTick(workspaceId: string): Promise<SequenceTick
       },
       workspaceId,
     )
+
+    const nowInboxId = assignedId ?? pick.inbox.id
 
     // Log the send regardless of outcome
     await db.from('sequence_send_logs').insert({
@@ -270,27 +270,64 @@ export async function runSequenceTick(workspaceId: string): Promise<SequenceTick
       message_id:    sendResult.messageId ?? null,
       subject,
       from_email:    sendResult.from,
-      status:        sendResult.ok ? 'sent' : 'failed',
+      status:        sendResult.ok ? 'sent' : (sendResult.bounceType === 'hard' ? 'bounced' : 'failed'),
       error:         sendResult.ok ? null : (sendResult.error ?? null),
+      bounce_type:   sendResult.ok ? null : (sendResult.bounceType ?? null),
     })
 
     if (!sendResult.ok) {
       errors.push(`Send failed for ${contact.email}: ${sendResult.error}`)
+      const bounceType = sendResult.bounceType
 
+      // ── Hard bounce: stop immediately, mark contact's email as invalid ───────
+      if (bounceType === 'hard' || (sendResult.error && !isBounceError(sendResult.error) === false && bounceType === 'hard')) {
+        await db
+          .from('sequence_enrollments')
+          .update({
+            status:            'bounced',
+            completed_at:      triggeredAt,
+            assigned_inbox_id: nowInboxId,
+          })
+          .eq('id', enrollment.id)
+
+        // Flag the contact's email as invalid so future sequences skip it
+        await db
+          .from('contacts')
+          .update({
+            email_verification_status: 'invalid',
+            email_verification_note:   `Hard bounce: ${sendResult.error?.slice(0, 200)}`,
+            verification_checked_at:   triggeredAt,
+          })
+          .eq('id', enrollment.contact_id)
+
+        errors.push(`Enrollment ${enrollment.id} hard-bounced — contact email marked invalid`)
+        continue
+      }
+
+      // ── Soft bounce / infra error: retry with back-off ────────────────────
       const newAttempts = (enrollment.send_attempts ?? 0) + 1
 
-      if (newAttempts >= MAX_SEND_ATTEMPTS) {
-        // Permanently give up on this enrollment
+      if (newAttempts >= MAX_SOFT_ATTEMPTS) {
         await db
           .from('sequence_enrollments')
-          .update({ status: 'bounced', completed_at: triggeredAt, send_attempts: newAttempts })
+          .update({
+            status:            'bounced',
+            completed_at:      triggeredAt,
+            send_attempts:     newAttempts,
+            assigned_inbox_id: nowInboxId,
+          })
           .eq('id', enrollment.id)
-        errors.push(`Enrollment ${enrollment.id} marked bounced after ${newAttempts} failures`)
+        errors.push(`Enrollment ${enrollment.id} bounced after ${newAttempts} soft failures`)
       } else {
-        // Increment failure counter; keep active so next tick retries
+        const backoffHours = SOFT_BACKOFF_HOURS[Math.min(newAttempts - 1, SOFT_BACKOFF_HOURS.length - 1)]
+        const retryAt = new Date(Date.now() + backoffHours * 60 * 60 * 1000).toISOString()
         await db
           .from('sequence_enrollments')
-          .update({ send_attempts: newAttempts })
+          .update({
+            send_attempts:     newAttempts,
+            next_send_at:      retryAt,
+            assigned_inbox_id: nowInboxId,
+          })
           .eq('id', enrollment.id)
       }
       continue
@@ -300,7 +337,6 @@ export async function runSequenceTick(workspaceId: string): Promise<SequenceTick
 
     // ── 7. Advance enrollment to next step ────────────────────────────────────
     const nextStep = seqSteps?.get(enrollment.current_step + 1)
-    const nowInboxId = assignedId ?? pick.inbox.id  // persist assignment if first send
 
     if (nextStep) {
       const nextSendAt = new Date(
@@ -311,12 +347,12 @@ export async function runSequenceTick(workspaceId: string): Promise<SequenceTick
         .update({
           current_step:      enrollment.current_step + 1,
           next_send_at:      nextSendAt,
-          send_attempts:     0,               // reset on success
+          send_attempts:     0,               // reset counter on success
           assigned_inbox_id: nowInboxId,
         })
         .eq('id', enrollment.id)
     } else {
-      // This was the last step
+      // Last step — sequence complete
       await db
         .from('sequence_enrollments')
         .update({
@@ -351,7 +387,22 @@ export async function enrollContacts(
 ): Promise<{ enrolled: number; skipped: number }> {
   const db = getSupabaseAdmin()
 
-  const rows = contactIds.map((contactId) => ({
+  // Filter out contacts with hard-bounced / invalid emails before enrolling
+  const { data: validContacts } = await db
+    .from('contacts')
+    .select('id')
+    .in('id', contactIds)
+    .neq('email_verification_status', 'invalid')
+    .eq('never_contact', false)
+
+  const validIds = (validContacts ?? []).map((c) => c.id)
+  const skippedInvalid = contactIds.length - validIds.length
+
+  if (validIds.length === 0) {
+    return { enrolled: 0, skipped: contactIds.length }
+  }
+
+  const rows = validIds.map((contactId) => ({
     sequence_id:   sequenceId,
     contact_id:    contactId,
     workspace_id:  workspaceId,
@@ -369,7 +420,7 @@ export async function enrollContacts(
   if (error) throw new Error(error.message)
 
   const enrolled = data?.length ?? 0
-  return { enrolled, skipped: contactIds.length - enrolled }
+  return { enrolled, skipped: skippedInvalid + (validIds.length - enrolled) }
 }
 
 // ─── Unenroll on reply ────────────────────────────────────────────────────────
@@ -397,7 +448,6 @@ export async function getSequenceSummaries(workspaceId: string): Promise<Sequenc
 
   if (!sequences || sequences.length === 0) return []
 
-  // Parallel: fetch step counts + stats for all sequences at once
   const summaries = await Promise.all(
     (sequences as Sequence[]).map(async (seq) => {
       const [{ data: steps }, stats] = await Promise.all([
@@ -435,7 +485,6 @@ export async function getSequenceWithSteps(sequenceId: string, workspaceId: stri
 export async function getSequenceStats(sequenceId: string): Promise<SequenceStats> {
   const db = getSupabaseAdmin()
 
-  // Load enrollments to get both status counts and the IDs needed for log lookup
   const { data: enrollments } = await db
     .from('sequence_enrollments')
     .select('id, status')
@@ -445,15 +494,23 @@ export async function getSequenceStats(sequenceId: string): Promise<SequenceStat
   const byStatus = (s: string) => rows.filter((r) => r.status === s).length
   const enrollmentIds = rows.map((r) => r.id)
 
-  // Count sent logs via enrollment IDs (sequence_send_logs has no sequence_id column)
   let totalSent = 0
+  let hardBounces = 0
   if (enrollmentIds.length > 0) {
-    const { count } = await db
-      .from('sequence_send_logs')
-      .select('id', { count: 'exact', head: true })
-      .in('enrollment_id', enrollmentIds)
-      .eq('status', 'sent')
-    totalSent = count ?? 0
+    const [sentResult, hardResult] = await Promise.all([
+      db
+        .from('sequence_send_logs')
+        .select('id', { count: 'exact', head: true })
+        .in('enrollment_id', enrollmentIds)
+        .eq('status', 'sent'),
+      db
+        .from('sequence_send_logs')
+        .select('id', { count: 'exact', head: true })
+        .in('enrollment_id', enrollmentIds)
+        .eq('bounce_type', 'hard'),
+    ])
+    totalSent = sentResult.count ?? 0
+    hardBounces = hardResult.count ?? 0
   }
 
   return {
@@ -463,8 +520,8 @@ export async function getSequenceStats(sequenceId: string): Promise<SequenceStat
     completed:      byStatus('completed'),
     replied:        byStatus('replied'),
     bounced:        byStatus('bounced'),
+    hard_bounces:   hardBounces,
     total_sent:     totalSent,
-    open_rate:      0,
   }
 }
 

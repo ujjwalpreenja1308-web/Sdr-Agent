@@ -221,11 +221,22 @@ warmingRoutes.post('/api/warming/:workspaceId/test-credentials', async (c) => {
 })
 
 // ─── GET /api/warming/:workspaceId/capacity ───────────────────────────────────
-// Outreach capacity remaining today across all outreach-enabled inboxes
+// Legacy: simple remaining-today count across outreach-enabled inboxes
 
 warmingRoutes.get('/api/warming/:workspaceId/capacity', async (c) => {
   const { workspaceId } = c.req.param()
   const { getOutreachCapacity } = await import('../lib/smtp-pool.js')
   const capacity = await getOutreachCapacity(workspaceId)
   return c.json(capacity)
+})
+
+// ─── GET /api/warming/:workspaceId/send-capacity ──────────────────────────────
+// Full send capacity report: per-inbox warmup stage, daily cap, today's usage,
+// and projected capacity growth over the next 7 / 14 / 30 days.
+
+warmingRoutes.get('/api/warming/:workspaceId/send-capacity', async (c) => {
+  const { workspaceId } = c.req.param()
+  const { getSendCapacityReport } = await import('../lib/send-capacity.js')
+  const report = await getSendCapacityReport(workspaceId)
+  return c.json(report)
 })

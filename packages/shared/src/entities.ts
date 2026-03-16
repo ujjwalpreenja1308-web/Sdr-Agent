@@ -200,6 +200,7 @@ export interface AuditLog {
 export type SequenceStatus = 'draft' | 'active' | 'archived' | string
 export type SequenceStepType = 'icebreaker' | 'follow_up' | 'breakup' | string
 export type EnrollmentStatus = 'active' | 'paused' | 'completed' | 'replied' | 'bounced' | 'unsubscribed' | string
+export type BounceType = 'hard' | 'soft'
 
 export interface Sequence {
   id: string
@@ -245,6 +246,8 @@ export interface SequenceSendLog {
   subject: string | null
   from_email: string | null
   status: 'sent' | 'bounced' | 'failed' | string
+  /** 'hard' = permanent address failure (never retry); 'soft' = transient (retry with back-off) */
+  bounce_type: 'hard' | 'soft' | null
   error: string | null
   sent_at: string
 }

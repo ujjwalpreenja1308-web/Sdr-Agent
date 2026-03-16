@@ -584,8 +584,10 @@ export interface SequenceStats {
   completed: number
   replied: number
   bounced: number
+  /** Subset of bounced that were permanent address-level failures */
+  hard_bounces: number
   total_sent: number
-  open_rate: number  // placeholder – filled when open-tracking available
+  // open_rate intentionally omitted — no open tracking
 }
 
 export interface SequenceSummary extends Sequence {
@@ -694,4 +696,45 @@ export interface WarmingRunResult {
   inboxes_processed: number
   emails_sent: number
   errors: string[]
+}
+
+// ─── Send Capacity Report ─────────────────────────────────────────────────────
+
+export type WarmupStage = 'week_1' | 'week_2' | 'week_3' | 'week_4_plus'
+
+export interface InboxCapacityDetail {
+  id: string
+  email: string
+  warmup_stage: WarmupStage
+  /** Calendar days since the inbox was added */
+  warmup_day: number
+  health_score: number
+  /** How many warming emails are sent per day at the current ramp stage */
+  daily_warmup_target: number
+  /** Outreach-safe cap = floor(daily_warmup_target × 0.7) */
+  daily_outreach_cap: number
+  sent_today: number
+  remaining_today: number
+  status: string
+  use_for_outreach: boolean
+}
+
+export interface SendCapacityReport {
+  workspace_id: string
+  generated_at: string
+  summary: {
+    total_inboxes: number
+    active_outreach_inboxes: number
+    total_outreach_cap_today: number
+    total_sent_today: number
+    total_remaining_today: number
+  }
+  inboxes: InboxCapacityDetail[]
+  projections: {
+    /** Projected total outreach emails/day in 7 days (assuming daily warming) */
+    in_7_days: number
+    in_14_days: number
+    in_30_days: number
+  }
+  recommendation: string
 }
