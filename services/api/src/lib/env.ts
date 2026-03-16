@@ -30,6 +30,7 @@ type EnvKey =
   | 'PIPEIQ_DEV_USER_ID'
   | 'PIPEIQ_DEV_ORG_ID'
   | 'PIPEIQ_WARMING_CRON_SECRET'
+  | 'SERPER_API_KEY'
 
 type OptionalEnvKey =
   | 'SUPABASE_URL'
@@ -48,6 +49,7 @@ type OptionalEnvKey =
   | 'PIPEIQ_DEV_USER_ID'
   | 'PIPEIQ_DEV_ORG_ID'
   | 'PIPEIQ_WARMING_CRON_SECRET'
+  | 'SERPER_API_KEY'
 
 const OPTIONAL_KEYS = new Set<OptionalEnvKey>([
   'SUPABASE_URL',
@@ -66,6 +68,7 @@ const OPTIONAL_KEYS = new Set<OptionalEnvKey>([
   'PIPEIQ_DEV_USER_ID',
   'PIPEIQ_DEV_ORG_ID',
   'PIPEIQ_WARMING_CRON_SECRET',
+  'SERPER_API_KEY',
 ])
 
 function getEnvValue(name: EnvKey): string {
@@ -107,6 +110,7 @@ export const env = {
     orgId: getEnvValue('PIPEIQ_DEV_ORG_ID') || 'local-org',
   },
   warmingCronSecret: getEnvValue('PIPEIQ_WARMING_CRON_SECRET') || 'dev-warming-secret',
+  serperApiKey: getEnvValue('SERPER_API_KEY'),
 }
 
 export function allowedOrigins(): string[] {

@@ -1,6 +1,7 @@
 import type { OnboardingProfile } from '@pipeiq/shared'
 
 import { executeConnectedTool } from './composio.js'
+import { env } from './env.js'
 import { incrementOrgMonthlyUsage, getWorkspaceApiKey } from './supabase.js'
 import { getApolloTierAllowance } from './subscription.js'
 
@@ -260,6 +261,114 @@ function mapApolloProspect(person: unknown, fallbackSignal: string): ApolloProsp
   }
 }
 
+// ─── LinkedIn resolver ────────────────────────────────────────────────────────
+
+const LINKEDIN_URL_RE = /https?:\/\/(?:www\.)?linkedin\.com\/in\/[A-Za-z0-9_%-]+(?:\/)?/g
+const LINKEDIN_RESOLVE_CONCURRENCY = 3
+const LINKEDIN_RESOLVE_MAX = 10
+
+/**
+ * Try to extract a first + last name from a LinkedIn URL slug.
+ * e.g. "john-smith-abc123" → "John Smith", "jsmith" → null
+ */
+function nameFromLinkedInSlug(url: string): string | null {
+  const match = /linkedin\.com\/in\/([A-Za-z][A-Za-z-]+)/.exec(url)
+  if (!match) return null
+  // Drop trailing alphanumeric IDs (e.g. "-a1b2c3")
+  const slug = match[1].replace(/-[a-z0-9]{4,}$/i, '')
+  const parts = slug.split('-').filter((p) => p.length > 1)
+  if (parts.length < 2) return null
+  return parts.map((p) => p.charAt(0).toUpperCase() + p.slice(1)).join(' ')
+}
+
+async function resolveLinkedInViaSerper(query: string, apiKey: string): Promise<string | null> {
+  const response = await fetch('https://google.serper.dev/search', {
+    method: 'POST',
+    headers: { 'X-API-KEY': apiKey, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ q: query, num: 5 }),
+  })
+  if (!response.ok) return null
+  const data = asRecord(safeJsonParse(await response.text()))
+  if (!data) return null
+  for (const result of asArray(data.organic)) {
+    const link = asString(asRecord(result)?.link)
+    if (link && /linkedin\.com\/in\//i.test(link)) {
+      return link.split('?')[0].replace(/\/$/, '')
+    }
+  }
+  return null
+}
+
+async function resolveLinkedInViaDuckDuckGo(query: string): Promise<string | null> {
+  const response = await fetch(
+    `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`,
+    { headers: { 'User-Agent': 'Mozilla/5.0 (compatible; PipeIQ-Resolver/1.0)' } },
+  )
+  if (!response.ok) return null
+  const html = await response.text()
+  const matches = html.match(LINKEDIN_URL_RE)
+  if (!matches || matches.length === 0) return null
+  return matches[0].split('?')[0].replace(/\/$/, '')
+}
+
+async function resolveLinkedIn(
+  firstName: string,
+  title: string,
+  company: string,
+): Promise<string | null> {
+  const query = `${firstName} ${title} ${company} linkedin`
+  try {
+    if (env.serperApiKey) {
+      return await resolveLinkedInViaSerper(query, env.serperApiKey)
+    }
+    return await resolveLinkedInViaDuckDuckGo(query)
+  } catch {
+    return null
+  }
+}
+
+/**
+ * For prospects that came back from Apollo without a LinkedIn URL, attempt to
+ * resolve one via web search.  Also fills in a missing surname when the LinkedIn
+ * URL slug contains enough information to infer it.
+ */
+async function resolveLinkedInForProspects(
+  prospects: ApolloProspect[],
+): Promise<ApolloProspect[]> {
+  const toResolve = prospects
+    .filter((p) => !p.linkedinUrl)
+    .slice(0, LINKEDIN_RESOLVE_MAX)
+
+  if (toResolve.length === 0) return prospects
+
+  const resolved = new Map<ApolloProspect, string | null>()
+
+  for (let i = 0; i < toResolve.length; i += LINKEDIN_RESOLVE_CONCURRENCY) {
+    const batch = toResolve.slice(i, i + LINKEDIN_RESOLVE_CONCURRENCY)
+    const results = await Promise.all(
+      batch.map((p) => {
+        const firstName = p.fullName.split(' ')[0] ?? p.fullName
+        return resolveLinkedIn(firstName, p.title, p.company)
+      }),
+    )
+    for (let j = 0; j < batch.length; j++) {
+      resolved.set(batch[j], results[j] ?? null)
+    }
+  }
+
+  return prospects.map((p) => {
+    const url = resolved.get(p)
+    if (!url) return p
+    const hasSurname = p.fullName.trim().includes(' ')
+    const inferredName = !hasSurname ? nameFromLinkedInSlug(url) : null
+    return {
+      ...p,
+      linkedinUrl: url,
+      ...(inferredName ? { fullName: inferredName } : {}),
+    }
+  })
+}
+
 async function validateApolloApiKeyDirect(apiKey: string): Promise<ApolloHealthCheck> {
   try {
     const payload = await apolloRequest(apiKey, '/v1/auth/health', {
@@ -456,12 +565,12 @@ async function searchApolloProspectsViaComposio(params: {
       seenEmails.add(emailKey)
       prospects.push(prospect)
       if (prospects.length >= requestedLimit) {
-        return prospects
+        return resolveLinkedInForProspects(prospects)
       }
     }
   }
 
-  return prospects
+  return resolveLinkedInForProspects(prospects)
 }
 
 export async function validateApolloApiKey(apiKey: string): Promise<ApolloHealthCheck> {
@@ -543,5 +652,6 @@ export async function searchApolloProspects(params: {
     enrichmentBudget,
   })
 
-  return enriched.slice(0, enrichmentBudget)
+  const resolved = await resolveLinkedInForProspects(enriched)
+  return resolved.slice(0, enrichmentBudget)
 }
