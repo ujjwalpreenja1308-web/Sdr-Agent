@@ -1,35 +1,37 @@
 import { useCallback, useEffect, useMemo, useState, useTransition, type FormEvent } from 'react'
 import {
+  Activity,
   Bot,
   Cable,
-  CheckCircle2,
-  ChevronRight,
-  Play,
+  CircleDot,
+  Cpu,
+  Home,
   Send,
+  Settings,
   Sparkles,
-  Users,
+  Zap,
 } from 'lucide-react'
 
 import { ApprovalCard } from './components/approval-card'
+import { CompanyProfilePanel } from './components/company-profile-panel'
 import { IntegrationsPanel } from './components/integrations-panel'
+import { WarmingPanel } from './components/warming-panel'
 import { LaunchControlRoom } from './components/launch-control-room'
 import { MeetingsPanel } from './components/meetings-panel'
-import { OnboardingPanel } from './components/onboarding-panel'
 import { ProspectsPanel } from './components/prospects-panel'
 import { RepliesPanel } from './components/replies-panel'
 import { Badge } from './components/ui/badge'
 import { Button } from './components/ui/button'
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './components/ui/card'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from './components/ui/tabs'
 import { Textarea } from './components/ui/textarea'
 import {
-  executeAgentAction,
+  getAuthSession,
   getAgentCatalog,
-  getAgentPlan,
   checkIntegration,
   decideApproval,
   decideReply,
   generatePipeline,
+  getActivity,
   getApprovals,
   getCampaign,
   getInstantlyWebhook,
@@ -45,21 +47,22 @@ import {
   registerInstantlyWebhook,
   runProspectSearch,
   saveApiKeyConnection,
+  saveWorkspaceId,
   stageLaunch,
   streamChatWithAgent,
   updateOnboarding,
   verifyProspectEmails,
   type AgentCatalog,
-  type AgentActionResult,
   type AgentId,
-  type AgentPlan,
   type ApprovalItem,
+  type AuthSession,
   type CampaignSummary,
   type InstantlyWebhookSubscription,
   type IntegrationCheckResult,
   type LaunchReadiness,
   type MeetingPrepItem,
   type OnboardingProfile,
+  type OperatorEvent,
   type PipelineSnapshot,
   type ProspectRunSummary,
   type ReplyQueueItem,
@@ -72,8 +75,6 @@ import {
   type OnboardingTextField,
 } from './lib/onboarding'
 
-const externalUserId = 'founder-demo'
-const workspaceId = 'default'
 const apiBaseUrl = import.meta.env.VITE_API_URL ?? 'http://localhost:8000'
 const defaultSuggestions = [
   'Show blockers to first launch',
@@ -85,11 +86,8 @@ type AppTab =
   | 'onboarding'
   | 'overview'
   | 'integrations'
-  | 'prospects'
-  | 'approvals'
+  | 'warming'
   | 'pipeline'
-  | 'replies'
-  | 'meetings'
   | 'ai'
 type ChatEntry = {
   role: 'user' | 'assistant'
@@ -97,6 +95,7 @@ type ChatEntry = {
 }
 
 function App() {
+  const [session, setSession] = useState<AuthSession | null>(null)
   const [workspace, setWorkspace] = useState<WorkspaceSummary | null>(null)
   const [onboarding, setOnboarding] = useState<OnboardingProfile | null>(null)
   const [savedOnboardingSnapshot, setSavedOnboardingSnapshot] = useState('')
@@ -111,14 +110,13 @@ function App() {
   const [replies, setReplies] = useState<ReplyQueueItem[]>([])
   const [meetings, setMeetings] = useState<MeetingPrepItem[]>([])
   const [approvals, setApprovals] = useState<ApprovalItem[]>([])
+  const [activity, setActivity] = useState<OperatorEvent[]>([])
   const [activeTab, setActiveTab] = useState<AppTab>('onboarding')
   const [chatPrompt, setChatPrompt] = useState('Show blockers to first launch')
   const [chatEntries, setChatEntries] = useState<ChatEntry[]>([])
   const [chatMeta, setChatMeta] = useState('')
   const [agentCatalog, setAgentCatalog] = useState<AgentCatalog | null>(null)
-  const [agentPlan, setAgentPlan] = useState<AgentPlan | null>(null)
   const [selectedAgentId, setSelectedAgentId] = useState<AgentId | null>(null)
-  const [lastAgentAction, setLastAgentAction] = useState<AgentActionResult | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [busyToolkit, setBusyToolkit] = useState<string | null>(null)
   const [busyApprovalId, setBusyApprovalId] = useState<string | null>(null)
@@ -131,7 +129,8 @@ function App() {
   const [isVerifyingProspects, startVerificationTransition] = useTransition()
   const [isLaunchingCampaign, startLaunchTransition] = useTransition()
   const [isRegisteringWebhook, startWebhookTransition] = useTransition()
-  const [isActingAgent, startAgentActionTransition] = useTransition()
+  const activeWorkspaceId = session?.workspace_id ?? null
+  const activeUserId = session?.user_id ?? null
 
   const pendingApprovals = useMemo(
     () => approvals.filter((approval) => approval.status === 'pending'),
@@ -143,12 +142,6 @@ function App() {
     [replies],
   )
 
-  const connectedCount = useMemo(
-    () =>
-      workspace?.connections.filter((connection) => connection.status === 'connected').length ?? 0,
-    [workspace],
-  )
-
   const onboardingDirty = useMemo(() => {
     if (!onboarding) {
       return false
@@ -156,83 +149,90 @@ function App() {
     return JSON.stringify(onboarding) !== savedOnboardingSnapshot
   }, [onboarding, savedOnboardingSnapshot])
 
+  const refreshSession = useCallback(async () => {
+    const nextSession = await getAuthSession()
+    const storedWorkspaceId = typeof window !== 'undefined'
+      ? window.localStorage.getItem('pipeiq_workspace_id')
+      : null
+    const resolvedWorkspaceId =
+      storedWorkspaceId &&
+      nextSession.workspaces.some((workspaceOption) => workspaceOption.id === storedWorkspaceId)
+        ? storedWorkspaceId
+        : nextSession.workspace_id
+    const sessionWithWorkspace = {
+      ...nextSession,
+      workspace_id: resolvedWorkspaceId,
+    }
+    setSession((current) => {
+      if (
+        current?.workspace_id === sessionWithWorkspace.workspace_id &&
+        current.user_id === sessionWithWorkspace.user_id
+      ) {
+        return current
+      }
+      return sessionWithWorkspace
+    })
+    saveWorkspaceId(sessionWithWorkspace.workspace_id)
+    return sessionWithWorkspace
+  }, [])
+
   const refreshData = useCallback(async () => {
+    if (!activeWorkspaceId) {
+      return
+    }
     try {
-      const [
-        nextReadiness,
-        nextCampaign,
-        nextWebhook,
-        nextReplies,
-        nextMeetings,
-        nextWorkspace,
-        nextOnboarding,
-        nextProspectRun,
-        nextPipeline,
-        nextApprovals,
-        nextAgentCatalog,
-      ] =
-        await Promise.all([
-        getLaunchReadiness(workspaceId),
-        getCampaign(workspaceId),
-        getInstantlyWebhook(workspaceId),
-        getReplies(workspaceId),
-        getMeetings(workspaceId),
-        getWorkspace(workspaceId),
-        getOnboarding(workspaceId),
-        getProspectRun(workspaceId),
-        getPipeline(workspaceId),
-        getApprovals(workspaceId),
-        getAgentCatalog(workspaceId),
-        ])
-      setLaunchReadiness(nextReadiness)
-      setCampaign(nextCampaign)
-      setInstantlyWebhook(nextWebhook)
-      setReplies(nextReplies)
-      setMeetings(nextMeetings)
+      // Critical path: workspace + onboarding load first so the UI can render immediately
+      const [nextWorkspace, nextOnboarding] = await Promise.all([
+        getWorkspace(activeWorkspaceId),
+        getOnboarding(activeWorkspaceId),
+      ])
       setWorkspace(nextWorkspace)
       setOnboarding(nextOnboarding)
       setSavedOnboardingSnapshot(JSON.stringify(nextOnboarding))
-      setProspectRun(nextProspectRun)
-      setPipeline(nextPipeline)
-      setApprovals(nextApprovals)
-      setAgentCatalog(nextAgentCatalog)
-      setSelectedAgentId((current) => current ?? nextAgentCatalog.recommended_agent_id)
       setError(null)
+
       if (!hasInitialized) {
-        const missingRequiredConnections = nextWorkspace.connections.some(
-          (connection) =>
-            connection.category === 'required' && connection.status !== 'connected',
-        )
-        const hasVerifiedProspects = nextPipeline.contacts.some(
-          (contact) =>
-            contact.email_verification_status === 'valid' ||
-            contact.email_verification_status === 'risky',
-        )
-        if (!nextWorkspace.onboarding_completed) {
-          setActiveTab('onboarding')
-        } else if (missingRequiredConnections) {
-          setActiveTab('integrations')
-        } else if (nextProspectRun.status !== 'completed' || !hasVerifiedProspects) {
-          setActiveTab('prospects')
-        } else if (nextApprovals.length > 0) {
-          setActiveTab('approvals')
-        } else if (
-          nextReadiness.checklist.find((item) => item.id === 'batch')?.status !== 'complete'
-        ) {
-          setActiveTab('pipeline')
-        } else {
-          setActiveTab('overview')
-        }
+        setActiveTab('overview')
         setHasInitialized(true)
       }
+
+      // Secondary: fire the rest in the background without blocking the UI
+      void Promise.allSettled([
+        getLaunchReadiness(activeWorkspaceId).then(setLaunchReadiness),
+        getCampaign(activeWorkspaceId).then(setCampaign),
+        getInstantlyWebhook(activeWorkspaceId).then(setInstantlyWebhook),
+        getReplies(activeWorkspaceId).then(setReplies),
+        getMeetings(activeWorkspaceId).then(setMeetings),
+        getProspectRun(activeWorkspaceId).then(setProspectRun),
+        getPipeline(activeWorkspaceId).then(setPipeline),
+        getApprovals(activeWorkspaceId).then(setApprovals),
+        getAgentCatalog(activeWorkspaceId).then((catalog) => {
+          setAgentCatalog(catalog)
+          setSelectedAgentId((current) => current ?? catalog.recommended_agent_id ?? null)
+        }),
+        getActivity(activeWorkspaceId, 12).then(setActivity),
+      ])
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : 'Unable to load workspace.')
     }
-  }, [hasInitialized])
+  }, [activeWorkspaceId, hasInitialized])
 
   useEffect(() => {
+    void (async () => {
+      try {
+        await refreshSession()
+      } catch (sessionError) {
+        setError(sessionError instanceof Error ? sessionError.message : 'Unable to load session.')
+      }
+    })()
+  }, [refreshSession])
+
+  useEffect(() => {
+    if (!activeWorkspaceId) {
+      return
+    }
     void refreshData()
-  }, [refreshData])
+  }, [activeWorkspaceId, refreshData])
 
   useEffect(() => {
     if (!hasInitialized) {
@@ -244,33 +244,6 @@ function App() {
     return () => window.clearInterval(interval)
   }, [hasInitialized, refreshData])
 
-  useEffect(() => {
-    const effectiveAgentId = selectedAgentId ?? agentCatalog?.recommended_agent_id
-    if (!effectiveAgentId) {
-      return
-    }
-
-    let cancelled = false
-    void (async () => {
-      try {
-        const nextPlan = await getAgentPlan({
-          workspace_id: workspaceId,
-          agent_id: effectiveAgentId,
-        })
-        if (!cancelled) {
-          setAgentPlan(nextPlan)
-        }
-      } catch (planError) {
-        if (!cancelled) {
-          setError(planError instanceof Error ? planError.message : 'Could not load agent plan.')
-        }
-      }
-    })()
-
-    return () => {
-      cancelled = true
-    }
-  }, [agentCatalog, selectedAgentId])
 
   function handleOnboardingTextChange(field: OnboardingTextField, value: string) {
     setOnboarding((current) => {
@@ -297,7 +270,7 @@ function App() {
   }
 
   async function handleSaveOnboarding() {
-    if (!onboarding) {
+    if (!onboarding || !activeWorkspaceId) {
       return
     }
 
@@ -306,7 +279,7 @@ function App() {
     startOnboardingTransition(() => {
       void (async () => {
         try {
-          const saved = await updateOnboarding(workspaceId, onboarding)
+          const saved = await updateOnboarding(activeWorkspaceId, onboarding)
           setOnboarding(saved)
           setSavedOnboardingSnapshot(JSON.stringify(saved))
           await refreshData()
@@ -324,14 +297,17 @@ function App() {
   }
 
   async function handleGeneratePipeline() {
+    if (!activeWorkspaceId) {
+      return
+    }
     setError(null)
 
     startPipelineTransition(() => {
       void (async () => {
         try {
-          await generatePipeline(workspaceId)
+          await generatePipeline(activeWorkspaceId)
           await refreshData()
-          setActiveTab('approvals')
+          setActiveTab('pipeline')
         } catch (generationError) {
           setError(
             generationError instanceof Error
@@ -344,14 +320,17 @@ function App() {
   }
 
   async function handleRunProspectSearch() {
+    if (!activeWorkspaceId) {
+      return
+    }
     setError(null)
 
     startProspectTransition(() => {
       void (async () => {
         try {
-          await runProspectSearch(workspaceId)
+          await runProspectSearch(activeWorkspaceId)
           await refreshData()
-          setActiveTab('prospects')
+          setActiveTab('pipeline')
         } catch (prospectError) {
           setError(
             prospectError instanceof Error
@@ -364,12 +343,15 @@ function App() {
   }
 
   async function handleVerifyProspectEmails() {
+    if (!activeWorkspaceId || !activeUserId) {
+      return
+    }
     setError(null)
 
     startVerificationTransition(() => {
       void (async () => {
         try {
-          await verifyProspectEmails(workspaceId, externalUserId)
+          await verifyProspectEmails(activeWorkspaceId, activeUserId)
           await refreshData()
           setActiveTab('pipeline')
         } catch (verificationError) {
@@ -384,18 +366,21 @@ function App() {
   }
 
   async function handleStageLaunch() {
+    if (!activeWorkspaceId) {
+      return
+    }
     setError(null)
 
     startLaunchTransition(() => {
       void (async () => {
         try {
-          const result = await stageLaunch(workspaceId)
+          const result = await stageLaunch(activeWorkspaceId)
           await refreshData()
           if (result.status === 'blocked') {
             setError(result.blockers[0] ?? result.message)
             return
           }
-          setActiveTab('replies')
+          setActiveTab('pipeline')
         } catch (launchError) {
           setError(
             launchError instanceof Error ? launchError.message : 'Could not stage the campaign.',
@@ -406,13 +391,16 @@ function App() {
   }
 
   async function handleRegisterWebhook() {
+    if (!activeWorkspaceId) {
+      return
+    }
     setError(null)
 
     startWebhookTransition(() => {
       void (async () => {
         try {
           await registerInstantlyWebhook({
-            workspace_id: workspaceId,
+            workspace_id: activeWorkspaceId,
             target_url: `${apiBaseUrl}/api/webhooks/instantly`,
           })
           await refreshData()
@@ -426,13 +414,16 @@ function App() {
   }
 
   async function handleAuthorize(toolkit: string) {
+    if (!activeWorkspaceId || !activeUserId) {
+      return
+    }
     setBusyToolkit(toolkit)
     setError(null)
 
     try {
       const launch = await launchOauthConnection({
-        workspace_id: workspaceId,
-        external_user_id: externalUserId,
+        workspace_id: activeWorkspaceId,
+        external_user_id: activeUserId,
         toolkit,
         callback_url: window.location.origin,
       })
@@ -463,32 +454,38 @@ function App() {
     }
   }
 
-  async function handleSaveApiKey(toolkit: string, label: string, secretHint: string) {
+  async function handleSaveApiKey(toolkit: string, label: string, apiKey: string) {
+    if (!activeWorkspaceId || !activeUserId) {
+      return
+    }
     setBusyToolkit(toolkit)
     setError(null)
 
     try {
       await saveApiKeyConnection({
-        workspace_id: workspaceId,
-        external_user_id: externalUserId,
+        workspace_id: activeWorkspaceId,
+        external_user_id: activeUserId,
         toolkit,
         label,
-        secret_hint: secretHint,
+        api_key: apiKey,
       })
       await refreshData()
     } catch (saveError) {
-      setError(saveError instanceof Error ? saveError.message : 'Could not save API key hint.')
+      setError(saveError instanceof Error ? saveError.message : 'Could not save API key.')
     } finally {
       setBusyToolkit(null)
     }
   }
 
   async function handleCheckIntegration(toolkit: string) {
+    if (!activeWorkspaceId) {
+      return
+    }
     setBusyToolkit(toolkit)
     setError(null)
 
     try {
-      const result = await checkIntegration(toolkit, workspaceId)
+      const result = await checkIntegration(toolkit, activeWorkspaceId)
       setIntegrationChecks((current) => ({
         ...current,
         [toolkit]: result,
@@ -504,11 +501,14 @@ function App() {
   }
 
   async function handleApprovalDecision(approvalId: string, decision: 'approved' | 'rejected') {
+    if (!activeWorkspaceId) {
+      return
+    }
     setBusyApprovalId(approvalId)
     setError(null)
 
     try {
-      await decideApproval(approvalId, decision, workspaceId)
+      await decideApproval(approvalId, decision, activeWorkspaceId)
       await refreshData()
     } catch (decisionError) {
       setError(decisionError instanceof Error ? decisionError.message : 'Could not update approval.')
@@ -518,14 +518,17 @@ function App() {
   }
 
   async function handleReplyDecision(replyId: string, decision: 'approved' | 'dismissed') {
+    if (!activeWorkspaceId) {
+      return
+    }
     setBusyReplyId(replyId)
     setError(null)
 
     try {
-      await decideReply(replyId, decision, workspaceId)
+      await decideReply(replyId, decision, activeWorkspaceId)
       await refreshData()
       if (decision === 'approved') {
-        setActiveTab('meetings')
+        setActiveTab('pipeline')
       }
     } catch (replyError) {
       setError(replyError instanceof Error ? replyError.message : 'Could not update reply.')
@@ -535,6 +538,9 @@ function App() {
   }
 
   async function runPrompt(prompt: string) {
+    if (!activeWorkspaceId) {
+      return
+    }
     setChatPrompt(prompt)
     setChatEntries([
       { role: 'user', content: prompt },
@@ -549,7 +555,7 @@ function App() {
         try {
           await streamChatWithAgent(
             {
-              workspace_id: workspaceId,
+              workspace_id: activeWorkspaceId,
               message: prompt,
               agent_id: selectedAgentId ?? agentCatalog?.recommended_agent_id ?? undefined,
             },
@@ -581,19 +587,7 @@ function App() {
                       : entry,
                   ),
                 )
-                setChatMeta('Agent response complete')
-                void (async () => {
-                  try {
-                    const nextPlan = await getAgentPlan({
-                      workspace_id: workspaceId,
-                      agent_id: selectedAgentId ?? agentCatalog?.recommended_agent_id ?? undefined,
-                      prompt,
-                    })
-                    setAgentPlan(nextPlan)
-                  } catch {
-                    return
-                  }
-                })()
+                setChatMeta('')
               },
             },
           )
@@ -609,68 +603,19 @@ function App() {
     await runPrompt(chatPrompt)
   }
 
-  async function handleSelectAgent(agentId: AgentId) {
-    setSelectedAgentId(agentId)
-    setActiveTab('ai')
-    setError(null)
 
-    try {
-      const nextPlan = await getAgentPlan({
-        workspace_id: workspaceId,
-        agent_id: agentId,
-      })
-      setAgentPlan(nextPlan)
-      setChatMeta(`${nextPlan.selected_agent_label} loaded`)
-      setChatPrompt(nextPlan.next_actions[0] ?? defaultSuggestions[0])
-    } catch (agentError) {
-      setError(agentError instanceof Error ? agentError.message : 'Could not load agent.')
-    }
-  }
-
-  async function handleExecuteAgent() {
-    const effectiveAgentId = selectedAgentId ?? agentCatalog?.recommended_agent_id
-    if (!effectiveAgentId) {
-      return
-    }
-
-    setError(null)
-    startAgentActionTransition(() => {
-      void (async () => {
-        try {
-          const result = await executeAgentAction({
-            workspace_id: workspaceId,
-            agent_id: effectiveAgentId,
-            prompt: chatPrompt,
-          })
-          setLastAgentAction(result)
-          setChatMeta(`${result.selected_agent_label}: ${result.summary}`)
-          await refreshData()
-          const nextPlan = await getAgentPlan({
-            workspace_id: workspaceId,
-            agent_id: effectiveAgentId,
-            prompt: chatPrompt,
-          })
-          setAgentPlan(nextPlan)
-        } catch (actionError) {
-          setError(actionError instanceof Error ? actionError.message : 'Could not run agent action.')
-        }
-      })()
-    })
-  }
-
-  if (
-    !workspace ||
-    !onboarding ||
-    !prospectRun ||
-    !pipeline ||
-    !launchReadiness ||
-    !campaign ||
-    !instantlyWebhook
-  ) {
+  if (!session || !workspace || !onboarding) {
     return (
-      <main className="h-screen overflow-hidden bg-background p-6">
-        <div className="flex h-full items-center justify-center rounded-[28px] border border-border bg-card">
-          <p className="text-sm text-muted-foreground">Loading PipeIQ...</p>
+      <main className="flex h-screen items-center justify-center bg-background">
+        <div className="flex flex-col items-center gap-3">
+          <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-primary text-primary-foreground">
+            <Sparkles className="h-4 w-4" />
+          </div>
+          {error ? (
+            <p className="text-sm text-danger-text">{error}</p>
+          ) : (
+            <p className="text-sm text-muted-foreground">Loading workspace…</p>
+          )}
         </div>
       </main>
     )
@@ -681,131 +626,95 @@ function App() {
   )
   const hunterConnection = workspace.connections.find((connection) => connection.toolkit === 'hunter')
 
+  const navItems: { value: AppTab; label: string; icon: typeof Home; badge?: number }[] = [
+    { value: 'overview', label: 'Overview', icon: Home },
+    { value: 'onboarding', label: 'Company', icon: Settings },
+    { value: 'integrations', label: 'Integrations', icon: Cable },
+    { value: 'warming', label: 'Warming', icon: Activity },
+    { value: 'pipeline', label: 'Outreach', icon: Zap, badge: (pendingApprovals.length + pendingReplies.length) || undefined },
+    { value: 'ai', label: 'AI', icon: Cpu },
+  ]
+
   return (
-    <main className="h-screen overflow-hidden bg-background p-4 text-foreground">
+    <main className="h-screen overflow-hidden bg-background text-foreground">
       <Tabs
         value={activeTab}
         onValueChange={(value) => setActiveTab(value as AppTab)}
-        className="grid h-full grid-cols-[240px_minmax(0,1fr)] overflow-hidden rounded-[28px] border border-border bg-card"
+        className="grid h-full grid-cols-[192px_minmax(0,1fr)] overflow-hidden"
       >
-        <aside className="flex h-full flex-col border-r border-border bg-card px-4 py-5">
-          <div className="mb-6 flex items-center gap-3">
-            <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-primary text-primary-foreground">
-              <Sparkles className="h-5 w-5" />
+        {/* Sidebar */}
+        <aside className="flex h-full flex-col border-r border-border bg-card">
+          {/* Logo */}
+          <div className="flex items-center gap-2.5 px-4 py-4">
+            <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-primary text-primary-foreground">
+              <Sparkles className="h-3.5 w-3.5" />
             </div>
-            <div>
-              <p className="text-sm font-semibold">PipeIQ</p>
-              <p className="text-xs text-muted-foreground">Desktop workspace</p>
-            </div>
+            <span className="text-sm font-semibold tracking-tight">PipeIQ</span>
           </div>
 
-          <TabsList className="grid h-auto grid-cols-1 gap-1 bg-transparent p-0">
-            <TabsTrigger value="onboarding" className="justify-start rounded-xl px-3 py-2 data-[state=active]:bg-secondary">
-              Onboarding
-            </TabsTrigger>
-            <TabsTrigger value="overview" className="justify-start rounded-xl px-3 py-2 data-[state=active]:bg-secondary">
-              Home
-            </TabsTrigger>
-            <TabsTrigger value="integrations" className="justify-start rounded-xl px-3 py-2 data-[state=active]:bg-secondary">
-              Integrations
-            </TabsTrigger>
-            <TabsTrigger value="prospects" className="justify-start rounded-xl px-3 py-2 data-[state=active]:bg-secondary">
-              Prospects
-            </TabsTrigger>
-            <TabsTrigger value="approvals" className="justify-start rounded-xl px-3 py-2 data-[state=active]:bg-secondary">
-              Approvals
-            </TabsTrigger>
-            <TabsTrigger value="pipeline" className="justify-start rounded-xl px-3 py-2 data-[state=active]:bg-secondary">
-              Pipeline
-            </TabsTrigger>
-            <TabsTrigger value="replies" className="justify-start rounded-xl px-3 py-2 data-[state=active]:bg-secondary">
-              Replies
-            </TabsTrigger>
-            <TabsTrigger value="meetings" className="justify-start rounded-xl px-3 py-2 data-[state=active]:bg-secondary">
-              Meetings
-            </TabsTrigger>
-            <TabsTrigger value="ai" className="justify-start rounded-xl px-3 py-2 data-[state=active]:bg-secondary">
-              PipeIQ AI
-            </TabsTrigger>
-          </TabsList>
+          {/* Nav */}
+          <nav className="flex-1 px-2 py-1">
+            <TabsList className="grid h-auto w-full grid-cols-1 gap-0.5 bg-transparent p-0">
+              {navItems.map(({ value, label, icon: Icon, badge }) => (
+                <TabsTrigger
+                  key={value}
+                  value={value}
+                  className="group relative h-9 w-full justify-start gap-3 rounded-lg px-3 text-muted-foreground data-[state=active]:bg-secondary data-[state=active]:text-foreground"
+                >
+                  <Icon className="h-4 w-4 shrink-0" />
+                  <span className="flex-1 text-left text-[13px] font-medium">{label}</span>
+                  {badge !== undefined && badge > 0 ? (
+                    <span className="flex h-[18px] min-w-[18px] items-center justify-center rounded-full bg-primary px-1 text-[10px] font-medium text-primary-foreground">
+                      {badge}
+                    </span>
+                  ) : null}
+                </TabsTrigger>
+              ))}
+            </TabsList>
+          </nav>
 
-          <div className="mt-6 space-y-3">
-            <StatusRow icon={Sparkles} label="Onboarding" value={`${workspace.onboarding_progress}%`} />
-            <StatusRow icon={Users} label="Sourced prospects" value={String(prospectRun.deduped_count)} />
-            <StatusRow icon={Cable} label="Connected tools" value={String(connectedCount)} />
-            <StatusRow icon={Send} label="Pending replies" value={String(pendingReplies.length)} />
+          {/* Footer */}
+          <div className="px-4 py-4">
+            <div className="flex items-center gap-2">
+              <span className={`h-1.5 w-1.5 rounded-full ${campaign?.status === 'running' ? 'bg-success' : 'bg-muted-foreground/30'}`} />
+              <span className="text-[11px] text-muted-foreground">{campaign?.status === 'running' ? 'Running' : 'Idle'}</span>
+            </div>
           </div>
-
-          <Card className="mt-auto bg-secondary/50 shadow-none">
-            <CardHeader>
-              <div>
-                <CardTitle className="text-sm">Launch status</CardTitle>
-                <CardDescription>Everything important in one view.</CardDescription>
-              </div>
-            </CardHeader>
-            <CardContent className="space-y-3">
-              <Badge variant={workspace.onboarding_completed ? 'success' : 'warning'}>
-                {workspace.onboarding_completed
-                  ? 'Onboarding complete'
-                  : `${workspace.onboarding_progress}% strategy captured`}
-              </Badge>
-              <p className="text-sm text-muted-foreground">
-                {workspace.onboarding_completed
-                  ? 'The workspace is ready for prospecting, approvals, and campaign staging.'
-                  : 'Finish the intake first so prospecting and email generation stop relying on seeded assumptions.'}
-              </p>
-              <Button size="sm" onClick={() => setActiveTab(workspace.onboarding_completed ? 'overview' : 'onboarding')}>
-                {workspace.onboarding_completed ? 'Open home' : 'Continue setup'}
-              </Button>
-            </CardContent>
-          </Card>
         </aside>
 
-        <section className="flex h-full min-w-0 flex-col overflow-hidden">
-          <header className="flex items-center justify-between border-b border-border px-6 py-4">
-            <div>
-              <h1 className="text-xl font-semibold">{workspace.name}</h1>
-              <p className="text-sm text-muted-foreground">{workspace.phase_focus}</p>
-            </div>
-            <div className="flex items-center gap-2">
-              <Badge variant={workspace.onboarding_completed ? 'success' : 'warning'}>
-                {`Onboarding ${workspace.onboarding_progress}%`}
-              </Badge>
-              <Badge variant="outline">{connectedCount} connected</Badge>
-              <Badge variant={pendingApprovals.length > 0 ? 'warning' : 'success'}>
-                {pendingApprovals.length} pending
-              </Badge>
-              <Badge variant={campaign.status === 'running' ? 'success' : 'outline'}>
-                {campaign.status}
-              </Badge>
-            </div>
+        {/* Main content */}
+        <section className="flex h-full min-w-0 flex-col overflow-hidden bg-background">
+          {/* Top bar */}
+          <header className="flex h-[49px] shrink-0 items-center justify-between border-b border-border bg-card px-5">
+            <h1 className="text-sm font-medium">
+              {navItems.find((n) => n.value === activeTab)?.label ?? 'Workspace'}
+            </h1>
+            {pendingApprovals.length > 0 ? (
+              <Badge variant="warning">{pendingApprovals.length} pending</Badge>
+            ) : null}
           </header>
 
-          <div className="min-h-0 flex-1 overflow-hidden p-6">
+          <div className="min-h-0 flex-1 overflow-hidden p-5">
             <TabsContent value="onboarding" className="h-full">
-              <OnboardingPanel
-                connectedCount={connectedCount}
+              <CompanyProfilePanel
                 onboarding={onboarding}
                 onboardingDirty={onboardingDirty}
-                pendingApprovals={pendingApprovals}
-                prospectStatus={prospectRun.status}
-                requiredConnections={requiredConnections}
                 saving={isSavingOnboarding}
                 workspace={workspace}
                 onListChange={handleOnboardingListChange}
                 onSave={handleSaveOnboarding}
-                onTabChange={setActiveTab}
+                onTabChange={(tab) => {
+                  if (tab === 'onboarding') setActiveTab('onboarding')
+                }}
                 onTextChange={handleOnboardingTextChange}
               />
             </TabsContent>
 
             <TabsContent value="overview" className="h-full">
               <OverviewPanel
-                connectedCount={connectedCount}
+                activity={activity}
                 onRunPrompt={runPrompt}
                 pendingApprovals={pendingApprovals}
-                pipeline={pipeline}
-                prospectRun={prospectRun}
                 workspace={workspace}
               />
             </TabsContent>
@@ -817,542 +726,389 @@ function App() {
                 diagnostics={integrationChecks}
                 onAuthorize={handleAuthorize}
                 onCheck={handleCheckIntegration}
+                onSaveApiKey={handleSaveApiKey}
               />
             </TabsContent>
 
-            <TabsContent value="prospects" className="h-full">
-              <ProspectsPanel
-                hunterConnection={hunterConnection}
-                pipeline={pipeline}
-                prospectRun={prospectRun}
-                running={isRunningProspects}
-                verifying={isVerifyingProspects}
-                onConnectHunter={() => handleAuthorize('hunter')}
-                onRun={handleRunProspectSearch}
-                onVerify={handleVerifyProspectEmails}
-              />
-            </TabsContent>
-
-            <TabsContent value="approvals" className="h-full">
-              <div className="grid h-full grid-cols-[1.3fr_0.7fr] gap-4 overflow-hidden">
-                <div className="grid min-h-0 grid-cols-2 gap-4">
-                  {approvals.length > 0 ? (
-                    approvals.map((approval) => (
-                      <ApprovalCard
-                        key={approval.id}
-                        approval={approval}
-                        busy={busyApprovalId === approval.id}
-                        onDecision={handleApprovalDecision}
-                      />
-                    ))
-                  ) : (
-                    <Card className="col-span-2 h-full shadow-none">
-                      <CardHeader>
-                        <div>
-                          <CardTitle>No approvals yet</CardTitle>
-                          <CardDescription>
-                            Generate the personalized batch after prospecting to create the first
-                            human review queue.
-                          </CardDescription>
-                        </div>
-                      </CardHeader>
-                      <CardContent className="flex h-[calc(100%-92px)] items-end">
-                        <Button variant="outline" onClick={() => setActiveTab('pipeline')}>
-                          Open batch generation
-                        </Button>
-                      </CardContent>
-                    </Card>
-                  )}
-                </div>
-                <Card className="h-full shadow-none">
-                  <CardHeader>
-                    <div>
-                      <CardTitle>Review notes</CardTitle>
-                      <CardDescription>Approve only what should go straight into a live campaign.</CardDescription>
-                    </div>
-                  </CardHeader>
-                  <CardContent className="flex h-[calc(100%-92px)] flex-col justify-between">
-                    <div className="space-y-3">
-                      <ReviewNote icon={CheckCircle2} title="Approvals" description="Batch approvals switch sourced prospects into launch-ready state." />
-                      <ReviewNote icon={Send} title="Sending seam" description="Instantly launch now executes through the workspace Composio connection." />
-                      <ReviewNote icon={Bot} title="Agent support" description="PipeIQ AI can summarize blockers and connection gaps from the same state." />
-                    </div>
-                    <Button variant="outline" onClick={() => setActiveTab('ai')}>
-                      Ask PipeIQ AI
-                    </Button>
-                  </CardContent>
-                </Card>
-              </div>
+            <TabsContent value="warming" className="h-full overflow-y-auto p-6">
+              <WarmingPanel workspaceId={workspace.id} />
             </TabsContent>
 
             <TabsContent value="pipeline" className="h-full">
-              <LaunchControlRoom
-                busyToolkit={busyToolkit}
-                generating={isGeneratingPipeline}
-                launching={isLaunchingCampaign}
-                pipeline={pipeline}
-                readiness={launchReadiness}
-                requiredConnections={requiredConnections}
-                onAuthorize={handleAuthorize}
-                onGenerate={handleGeneratePipeline}
-                onSaveApiKey={handleSaveApiKey}
-                onStageLaunch={handleStageLaunch}
-              />
-            </TabsContent>
-
-            <TabsContent value="replies" className="h-full">
-              <RepliesPanel
-                busyReplyId={busyReplyId}
-                registeringWebhook={isRegisteringWebhook}
-                replies={replies}
-                webhook={instantlyWebhook}
-                webhookTargetUrl={`${apiBaseUrl}/api/webhooks/instantly`}
-                onDecision={handleReplyDecision}
-                onRegisterWebhook={handleRegisterWebhook}
-              />
-            </TabsContent>
-
-            <TabsContent value="meetings" className="h-full">
-              <MeetingsPanel campaign={campaign} meetings={meetings} />
+              {pipeline && prospectRun && launchReadiness && campaign && instantlyWebhook ? (
+                <OutreachPanel
+                  approvals={approvals}
+                  busyApprovalId={busyApprovalId}
+                  busyReplyId={busyReplyId}
+                  busyToolkit={busyToolkit}
+                  campaign={campaign}
+                  generating={isGeneratingPipeline}
+                  hunterConnection={hunterConnection}
+                  launching={isLaunchingCampaign}
+                  meetings={meetings}
+                  pipeline={pipeline}
+                  prospectRun={prospectRun}
+                  readiness={launchReadiness}
+                  registeringWebhook={isRegisteringWebhook}
+                  replies={replies}
+                  requiredConnections={requiredConnections}
+                  runningProspects={isRunningProspects}
+                  verifyingProspects={isVerifyingProspects}
+                  webhook={instantlyWebhook}
+                  webhookTargetUrl={`${apiBaseUrl}/api/webhooks/instantly`}
+                  onApprovalDecision={handleApprovalDecision}
+                  onAuthorize={handleAuthorize}
+                  onConnectHunter={() => handleAuthorize('hunter')}
+                  onGenerate={handleGeneratePipeline}
+                  onReplyDecision={handleReplyDecision}
+                  onRegisterWebhook={handleRegisterWebhook}
+                  onRunProspects={handleRunProspectSearch}
+                  onSaveApiKey={handleSaveApiKey}
+                  onStageLaunch={handleStageLaunch}
+                  onVerifyProspects={handleVerifyProspectEmails}
+                />
+              ) : (
+                <div className="flex h-full items-center justify-center">
+                  <p className="text-sm text-muted-foreground">Loading outreach data…</p>
+                </div>
+              )}
             </TabsContent>
 
             <TabsContent value="ai" className="h-full">
               <AiPanel
-                agentCatalog={agentCatalog}
-                agentAction={lastAgentAction}
-                agentPlan={agentPlan}
                 chatEntries={chatEntries}
                 chatMeta={chatMeta}
                 chatPrompt={chatPrompt}
-                isActingAgent={isActingAgent}
                 isChatPending={isChatPending}
-                selectedAgentId={selectedAgentId}
-                onExecuteAgent={handleExecuteAgent}
                 onPromptChange={setChatPrompt}
                 onPromptSubmit={handleChatSubmit}
-                onSelectAgent={handleSelectAgent}
                 onSuggestionClick={runPrompt}
               />
             </TabsContent>
           </div>
 
-          {error ? <div className="border-t border-border bg-rose-50 px-6 py-3 text-sm text-rose-700">{error}</div> : null}
+          {error ? (
+            <div className="shrink-0 border-t border-danger-text/20 bg-danger-subtle px-5 py-2.5 text-xs text-danger-text">
+              {error}
+            </div>
+          ) : null}
         </section>
       </Tabs>
     </main>
   )
 }
 
+type OutreachTab = 'prospects' | 'approvals' | 'pipeline' | 'replies' | 'meetings'
+
+function OutreachPanel({
+  approvals, busyApprovalId, busyReplyId, busyToolkit, campaign, generating,
+  hunterConnection, launching, meetings, pipeline, prospectRun, readiness,
+  registeringWebhook, replies, requiredConnections, runningProspects, verifyingProspects,
+  webhook, webhookTargetUrl,
+  onApprovalDecision, onAuthorize, onConnectHunter, onGenerate, onReplyDecision,
+  onRegisterWebhook, onRunProspects, onSaveApiKey, onStageLaunch, onVerifyProspects,
+}: {
+  approvals: ReturnType<typeof import('./lib/api').getApprovals> extends Promise<infer T> ? T : never
+  busyApprovalId: string | null
+  busyReplyId: string | null
+  busyToolkit: string | null
+  campaign: import('./lib/api').CampaignSummary
+  generating: boolean
+  hunterConnection: import('./lib/api').ConnectionTarget | undefined
+  launching: boolean
+  meetings: import('./lib/api').MeetingPrepItem[]
+  pipeline: import('./lib/api').PipelineSnapshot
+  prospectRun: import('./lib/api').ProspectRunSummary
+  readiness: import('./lib/api').LaunchReadiness
+  registeringWebhook: boolean
+  replies: import('./lib/api').ReplyQueueItem[]
+  requiredConnections: import('./lib/api').ConnectionTarget[]
+  runningProspects: boolean
+  verifyingProspects: boolean
+  webhook: import('./lib/api').InstantlyWebhookSubscription
+  webhookTargetUrl: string
+  onApprovalDecision: (id: string, d: 'approved' | 'rejected') => Promise<void>
+  onAuthorize: (toolkit: string) => Promise<void>
+  onConnectHunter: () => Promise<void>
+  onGenerate: () => Promise<void>
+  onReplyDecision: (id: string, d: 'approved' | 'dismissed') => Promise<void>
+  onRegisterWebhook: () => Promise<void>
+  onRunProspects: () => Promise<void>
+  onSaveApiKey: (toolkit: string, label: string, apiKey: string) => Promise<void>
+  onStageLaunch: () => Promise<void>
+  onVerifyProspects: () => Promise<void>
+}) {
+  const [subTab, setSubTab] = useState<OutreachTab>('prospects')
+  const pendingApprovals = approvals.filter((a) => a.status === 'pending')
+  const pendingReplies = replies.filter((r) => r.status === 'pending')
+
+  const subNav: { value: OutreachTab; label: string; badge?: number }[] = [
+    { value: 'prospects', label: 'Prospects' },
+    { value: 'pipeline', label: 'Pipeline' },
+    { value: 'approvals', label: 'Approvals', badge: pendingApprovals.length || undefined },
+    { value: 'replies', label: 'Replies', badge: pendingReplies.length || undefined },
+    { value: 'meetings', label: 'Meetings' },
+  ]
+
+  return (
+    <div className="flex h-full flex-col gap-4 overflow-hidden">
+      <div className="flex shrink-0 gap-1 rounded-lg border border-border bg-card p-1 w-fit">
+        {subNav.map(({ value, label, badge }) => (
+          <button
+            key={value}
+            type="button"
+            onClick={() => setSubTab(value)}
+            className={`relative flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
+              subTab === value
+                ? 'bg-primary text-primary-foreground shadow-sm'
+                : 'text-muted-foreground hover:text-foreground hover:bg-secondary'
+            }`}
+          >
+            {label}
+            {badge !== undefined && badge > 0 ? (
+              <span className={`flex h-4 min-w-[16px] items-center justify-center rounded-full px-1 text-[10px] font-medium ${subTab === value ? 'bg-white/25 text-white' : 'bg-primary text-primary-foreground'}`}>
+                {badge}
+              </span>
+            ) : null}
+          </button>
+        ))}
+      </div>
+
+      <div className="min-h-0 flex-1 overflow-hidden">
+        {subTab === 'prospects' && (
+          <ProspectsPanel
+            hunterConnection={hunterConnection}
+            pipeline={pipeline}
+            prospectRun={prospectRun}
+            running={runningProspects}
+            verifying={verifyingProspects}
+            onConnectHunter={onConnectHunter}
+            onRun={onRunProspects}
+            onVerify={onVerifyProspects}
+          />
+        )}
+        {subTab === 'pipeline' && (
+          <LaunchControlRoom
+            busyToolkit={busyToolkit}
+            generating={generating}
+            launching={launching}
+            pipeline={pipeline}
+            readiness={readiness}
+            requiredConnections={requiredConnections}
+            onAuthorize={onAuthorize}
+            onGenerate={onGenerate}
+            onSaveApiKey={onSaveApiKey}
+            onStageLaunch={onStageLaunch}
+          />
+        )}
+        {subTab === 'approvals' && (
+          <div className="grid h-full auto-rows-min grid-cols-2 gap-3 overflow-y-auto content-start">
+            {approvals.length > 0 ? (
+              approvals.map((approval) => (
+                <ApprovalCard
+                  key={approval.id}
+                  approval={approval}
+                  busy={busyApprovalId === approval.id}
+                  onDecision={onApprovalDecision}
+                />
+              ))
+            ) : (
+              <div className="col-span-2 rounded-xl border border-dashed border-border p-10 text-center">
+                <p className="text-sm font-medium">No approvals yet</p>
+                <p className="mt-1 text-xs text-muted-foreground">Generate the personalized batch first.</p>
+              </div>
+            )}
+          </div>
+        )}
+        {subTab === 'replies' && (
+          <RepliesPanel
+            busyReplyId={busyReplyId}
+            registeringWebhook={registeringWebhook}
+            replies={replies}
+            webhook={webhook}
+            webhookTargetUrl={webhookTargetUrl}
+            onDecision={onReplyDecision}
+            onRegisterWebhook={onRegisterWebhook}
+          />
+        )}
+        {subTab === 'meetings' && (
+          <MeetingsPanel campaign={campaign} meetings={meetings} />
+        )}
+      </div>
+    </div>
+  )
+}
+
 function OverviewPanel({
-  connectedCount,
+  activity,
   onRunPrompt,
   pendingApprovals,
-  pipeline,
-  prospectRun,
   workspace,
 }: {
-  connectedCount: number
+  activity: OperatorEvent[]
   onRunPrompt: (prompt: string) => Promise<void>
   pendingApprovals: ApprovalItem[]
-  pipeline: PipelineSnapshot
-  prospectRun: ProspectRunSummary
   workspace: WorkspaceSummary
 }) {
   return (
-    <div className="grid h-full grid-cols-[1.1fr_0.9fr] gap-4 overflow-hidden">
-      <div className="grid gap-4">
-        <Card className="shadow-none">
-          <CardHeader>
-            <div>
-              <Badge variant="outline" className="mb-2">
-                Overview
-              </Badge>
-              <CardTitle className="text-2xl">Everything needed to launch this week</CardTitle>
-              <CardDescription>{workspace.greeting}</CardDescription>
+    <div className="h-full overflow-y-auto">
+      <div className="mx-auto max-w-2xl space-y-6 py-2">
+        {/* Metrics */}
+        <div className="grid grid-cols-3 gap-3">
+          {workspace.metrics.map((metric) => (
+            <div key={metric.label} className="rounded-xl border border-border bg-card p-4">
+              <p className="text-xs text-muted-foreground">{metric.label}</p>
+              <p className="mt-1.5 text-2xl font-semibold tracking-tight">{metric.value}</p>
+              <p className="mt-0.5 text-[11px] text-muted-foreground">{metric.caption}</p>
             </div>
-          </CardHeader>
-          <CardContent className="flex flex-wrap gap-2">
-            {defaultSuggestions.map((suggestion) => (
-              <Button
-                key={suggestion}
-                variant={suggestion === defaultSuggestions[0] ? 'default' : 'outline'}
-                onClick={() => onRunPrompt(suggestion)}
-              >
-                {suggestion}
-              </Button>
-            ))}
-          </CardContent>
-        </Card>
-
-        <div className="grid grid-cols-3 gap-4">
-          {workspace.metrics.map((metric, index) => (
-            <Card key={metric.label} className="shadow-none">
-              <CardContent className="space-y-2 p-5">
-                <div className="flex items-center justify-between">
-                  <span className="text-sm text-muted-foreground">{metric.label}</span>
-                  {index === 0 ? <Users className="h-4 w-4 text-muted-foreground" /> : null}
-                  {index === 1 ? <Bot className="h-4 w-4 text-muted-foreground" /> : null}
-                  {index === 2 ? <Play className="h-4 w-4 text-muted-foreground" /> : null}
-                </div>
-                <div className="text-3xl font-semibold tracking-tight">{metric.value}</div>
-                <p className="text-sm text-muted-foreground">{metric.caption}</p>
-              </CardContent>
-            </Card>
           ))}
         </div>
 
-        <Card className="flex-1 shadow-none">
-          <CardHeader>
-            <div>
-              <CardTitle>Queue summary</CardTitle>
-              <CardDescription>What still needs human action before handoff.</CardDescription>
-            </div>
-          </CardHeader>
-          <CardContent className="grid gap-3">
-            {pendingApprovals.length > 0 ? (
-              pendingApprovals.map((approval) => (
-                <div key={approval.id} className="flex items-center justify-between rounded-xl border border-border p-4">
+        {/* Approvals */}
+        {pendingApprovals.length > 0 ? (
+          <div>
+            <p className="mb-2 text-xs font-medium text-muted-foreground">Pending approvals</p>
+            <div className="space-y-2">
+              {pendingApprovals.map((approval) => (
+                <div key={approval.id} className="flex items-center justify-between rounded-lg border border-border bg-card px-4 py-3">
                   <div>
-                    <p className="font-medium">{approval.title}</p>
-                    <p className="text-sm text-muted-foreground">{approval.summary}</p>
+                    <p className="text-sm font-medium">{approval.title}</p>
+                    <p className="mt-0.5 text-xs text-muted-foreground">{approval.summary}</p>
                   </div>
                   <Badge variant="warning">{approval.sample_size} samples</Badge>
                 </div>
-              ))
-            ) : (
-              <div className="rounded-xl border border-dashed border-border bg-secondary/30 p-4">
-                <p className="font-medium">No approval queue yet</p>
-                <p className="mt-1 text-sm text-muted-foreground">
-                  {prospectRun.status === 'completed'
-                    ? 'Verify sourced emails, then generate the first personalized batch.'
-                    : 'Run Apollo prospecting to source the first contact set.'}
-                </p>
-              </div>
-            )}
-          </CardContent>
-        </Card>
-      </div>
-
-      <div className="grid gap-4">
-        <Card className="shadow-none">
-          <CardHeader>
-            <div>
-              <CardTitle>Readiness</CardTitle>
-              <CardDescription>Minimal signal across pipeline, tools, and approvals.</CardDescription>
+              ))}
             </div>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <ReadinessRow label="Pending approvals" value={String(pendingApprovals.length)} tone="warning" />
-            <ReadinessRow label="Connected tools" value={String(connectedCount)} tone="default" />
-            <ReadinessRow label="Sourced prospects" value={String(prospectRun.deduped_count)} tone={prospectRun.status === 'completed' ? 'success' : 'default'} />
-            <ReadinessRow
-              label="Emails verified"
-              value={String(
-                pipeline.contacts.filter(
-                  (contact) =>
-                    contact.email_verification_status === 'valid' ||
-                    contact.email_verification_status === 'risky',
-                ).length,
-              )}
-              tone={
-                pipeline.contacts.some(
-                  (contact) =>
-                    contact.email_verification_status === 'valid' ||
-                    contact.email_verification_status === 'risky',
-                )
-                  ? 'success'
-                  : 'default'
-              }
-            />
-            <ReadinessRow label="Drafts generated" value={String(pipeline.contacts.length)} tone={pipeline.contacts.length > 0 ? 'success' : 'default'} />
-          </CardContent>
-        </Card>
+          </div>
+        ) : null}
 
-        <Card className="shadow-none">
-          <CardHeader>
-            <div>
-              <CardTitle>ICP questions</CardTitle>
-              <CardDescription>The compact strategy seam for onboarding.</CardDescription>
+        {/* Activity */}
+        <div>
+          <p className="mb-2 text-xs font-medium text-muted-foreground">Recent activity</p>
+          {activity.length > 0 ? (
+            <div className="space-y-1.5">
+              {activity.slice(0, 6).map((event) => (
+                <div key={event.id} className="flex items-start gap-3 rounded-lg border border-border bg-card px-4 py-3">
+                  <Activity className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                  <div className="min-w-0 flex-1">
+                    <p className="text-xs font-medium">{event.summary}</p>
+                    <p className="mt-0.5 text-[11px] text-muted-foreground">{new Date(event.created_at).toLocaleString()}</p>
+                  </div>
+                </div>
+              ))}
             </div>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            {workspace.strategy_questions.map((question) => (
-              <div key={question} className="flex items-start gap-2 rounded-xl border border-border bg-secondary/40 p-3 text-sm">
-                <ChevronRight className="mt-0.5 h-4 w-4 text-muted-foreground" />
-                <span>{question}</span>
-              </div>
+          ) : (
+            <div className="rounded-lg border border-dashed border-border px-4 py-6 text-center">
+              <p className="text-xs text-muted-foreground">No activity yet</p>
+            </div>
+          )}
+        </div>
+
+        {/* Ask AI */}
+        <div>
+          <p className="mb-2 text-xs font-medium text-muted-foreground">Ask AI</p>
+          <div className="flex flex-wrap gap-2">
+            {defaultSuggestions.map((s) => (
+              <Button key={s} size="sm" variant="outline" onClick={() => onRunPrompt(s)}>{s}</Button>
             ))}
-          </CardContent>
-        </Card>
+          </div>
+        </div>
       </div>
     </div>
   )
 }
 
 function AiPanel({
-  agentCatalog,
-  agentAction,
-  agentPlan,
   chatEntries,
   chatMeta,
   chatPrompt,
-  isActingAgent,
   isChatPending,
-  selectedAgentId,
-  onExecuteAgent,
   onPromptChange,
   onPromptSubmit,
-  onSelectAgent,
   onSuggestionClick,
 }: {
-  agentCatalog: AgentCatalog | null
-  agentAction: AgentActionResult | null
-  agentPlan: AgentPlan | null
   chatEntries: ChatEntry[]
   chatMeta: string
   chatPrompt: string
-  isActingAgent: boolean
   isChatPending: boolean
-  selectedAgentId: AgentId | null
-  onExecuteAgent: () => Promise<void>
   onPromptChange: (value: string) => void
   onPromptSubmit: (event: FormEvent<HTMLFormElement>) => Promise<void>
-  onSelectAgent: (agentId: AgentId) => Promise<void>
   onSuggestionClick: (prompt: string) => Promise<void>
 }) {
-  const assistantEntry = chatEntries.find((entry) => entry.role === 'assistant')
-  const selectedAgent =
-    agentCatalog?.agents.find((agent) => agent.id === selectedAgentId) ??
-    agentCatalog?.agents.find((agent) => agent.id === agentCatalog.recommended_agent_id) ??
-    null
-  const prompts =
-    selectedAgent?.suggested_prompts.length && selectedAgent.suggested_prompts.length > 0
-      ? selectedAgent.suggested_prompts
-      : defaultSuggestions
+  const userEntry = chatEntries.find((e) => e.role === 'user')
+  const assistantEntry = chatEntries.find((e) => e.role === 'assistant')
 
   return (
-    <div className="grid h-full grid-cols-[320px_minmax(0,1fr)] gap-4 overflow-hidden">
-      <Card className="flex h-full flex-col shadow-none">
-        <CardHeader>
-          <div>
-            <Badge variant="outline" className="mb-2">
-              Agents
-            </Badge>
-            <CardTitle>Specialists</CardTitle>
-            <CardDescription>
-              Pick the agent that should own the next outbound task.
-            </CardDescription>
-          </div>
-        </CardHeader>
-        <CardContent className="grid min-h-0 flex-1 gap-3 overflow-y-auto pr-1">
-          {agentCatalog?.agents.map((agent) => (
-            <button
-              key={agent.id}
-              className={`rounded-2xl border p-4 text-left transition ${
-                agent.id === selectedAgent?.id
-                  ? 'border-primary bg-primary/5'
-                  : 'border-border bg-secondary/20 hover:bg-secondary/40'
-              }`}
-              type="button"
-              onClick={() => void onSelectAgent(agent.id)}
-            >
-              <div className="flex items-center justify-between gap-3">
-                <div>
-                  <p className="font-medium">{agent.label}</p>
-                  <p className="mt-1 text-xs text-muted-foreground">{agent.focus}</p>
-                </div>
-                <Badge
-                  variant={
-                    agent.status === 'ready'
-                      ? 'success'
-                      : agent.status === 'attention'
-                        ? 'warning'
-                        : 'outline'
-                  }
-                >
-                  {agent.status}
-                </Badge>
-              </div>
-              <p className="mt-3 text-sm text-muted-foreground">{agent.rationale}</p>
-            </button>
-          )) ?? null}
-        </CardContent>
-      </Card>
-
-      <Card className="flex h-full flex-col shadow-none">
-      <CardHeader>
-        <div>
-          <Badge variant="outline" className="mb-2">
-            PipeIQ AI
-          </Badge>
-          <CardTitle>{selectedAgent?.label ?? 'Your autonomous outbound operator'}</CardTitle>
-          <CardDescription>
-            {chatMeta || 'Use the agent to inspect blockers, summarize readiness, or plan the next launch step.'}
-          </CardDescription>
-        </div>
-      </CardHeader>
-      <CardContent className="flex min-h-0 flex-1 flex-col">
-        <div className="grid min-h-0 flex-1 grid-cols-[0.92fr_1.08fr] gap-4">
-          <div className="flex min-h-0 flex-col gap-4">
-            <div className="rounded-2xl border border-border bg-secondary/30 p-4">
-              <p className="mb-2 text-sm font-medium">Current runbook</p>
-              <p className="text-sm text-muted-foreground">
-                {agentPlan?.summary ?? 'Loading current agent plan.'}
-              </p>
-              {agentPlan?.blockers.length ? (
-                <div className="mt-3 space-y-2">
-                  {agentPlan.blockers.slice(0, 3).map((blocker) => (
-                    <div key={blocker} className="rounded-xl border border-border bg-background px-3 py-2 text-sm text-muted-foreground">
-                      {blocker}
-                    </div>
-                  ))}
-                </div>
-              ) : null}
-              {agentAction ? (
-                <div className="mt-3 rounded-xl border border-border bg-background px-3 py-3">
-                  <p className="text-sm font-medium">Last execution</p>
-                  <p className="mt-1 text-sm text-muted-foreground">{agentAction.summary}</p>
-                </div>
-              ) : null}
+    <div className="flex h-full flex-col">
+      {/* Messages */}
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        {chatEntries.length === 0 ? (
+          <div className="flex h-full flex-col items-center justify-center gap-6 px-6">
+            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary/10 text-primary">
+              <Bot className="h-5 w-5" />
             </div>
-
-            <div className="grid gap-3">
-              {(agentPlan?.sections ?? []).map((section) => (
-                <div key={section.title} className="rounded-2xl border border-border p-4">
-                  <p className="mb-2 text-sm font-medium">{section.title}</p>
-                  <div className="space-y-2">
-                    {section.bullets.map((bullet) => (
-                      <div key={bullet} className="text-sm text-muted-foreground">
-                        {bullet}
-                      </div>
-                    ))}
-                  </div>
-                </div>
+            <div className="text-center">
+              <p className="text-sm font-medium">Ask anything</p>
+              <p className="mt-1 text-xs text-muted-foreground">The right agent is chosen automatically based on your query.</p>
+            </div>
+            <div className="flex flex-wrap justify-center gap-2">
+              {defaultSuggestions.map((s) => (
+                <Button key={s} size="sm" variant="outline" onClick={() => onSuggestionClick(s)}>{s}</Button>
               ))}
             </div>
           </div>
-
-          {assistantEntry ? (
-            <div className="flex min-h-0 flex-1 flex-col gap-4">
-              <div className="rounded-2xl border border-border bg-secondary/40 p-4">
-                <p className="mb-2 text-sm font-medium">Latest prompt</p>
-                <p className="text-sm text-muted-foreground">
-                  {chatEntries.find((entry) => entry.role === 'user')?.content}
-                </p>
+        ) : (
+          <div className="mx-auto max-w-2xl space-y-4 px-4 py-6">
+            {userEntry ? (
+              <div className="flex justify-end">
+                <div className="max-w-[80%] rounded-2xl bg-primary px-4 py-2.5 text-sm text-primary-foreground">
+                  {userEntry.content}
+                </div>
               </div>
-              <div className="min-h-0 flex-1 rounded-2xl border border-border bg-background p-4">
-                <p className="mb-2 text-sm font-medium">PipeIQ response</p>
-                <p className="whitespace-pre-wrap text-sm text-muted-foreground">
-                  {assistantEntry.content}
-                </p>
+            ) : null}
+            {assistantEntry ? (
+              <div className="flex justify-start">
+                <div className="max-w-[85%] rounded-2xl border border-border bg-card px-4 py-3">
+                  {chatMeta && isChatPending ? (
+                    <p className="mb-1.5 text-[11px] text-muted-foreground">{chatMeta}</p>
+                  ) : null}
+                  {assistantEntry.content ? (
+                    <p className="whitespace-pre-wrap text-sm text-foreground leading-relaxed">
+                      {assistantEntry.content}
+                    </p>
+                  ) : (
+                    <span className="inline-flex gap-1 text-muted-foreground">
+                      <span className="animate-pulse">·</span>
+                      <span className="animate-pulse [animation-delay:150ms]">·</span>
+                      <span className="animate-pulse [animation-delay:300ms]">·</span>
+                    </span>
+                  )}
+                </div>
               </div>
-            </div>
-          ) : (
-            <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-6 rounded-2xl border border-dashed border-border bg-secondary/30">
-              <div className="flex h-16 w-16 items-center justify-center rounded-full bg-primary/10 text-primary">
-                <Bot className="h-7 w-7" />
-              </div>
-              <div className="text-center">
-                <h2 className="text-xl font-semibold">{selectedAgent?.label ?? 'Ask PipeIQ anything'}</h2>
-                <p className="text-sm text-muted-foreground">
-                  {selectedAgent?.description ?? 'A minimal desktop AI surface with no overflow-heavy layout.'}
-                </p>
-              </div>
-              <div className="flex flex-wrap justify-center gap-2">
-                {prompts.map((suggestion) => (
-                  <Button key={suggestion} variant="outline" onClick={() => onSuggestionClick(suggestion)}>
-                    {suggestion}
-                  </Button>
-                ))}
-              </div>
-            </div>
-          )}
-        </div>
-
-        <form className="mt-4 grid grid-cols-[1fr_auto] gap-3" onSubmit={onPromptSubmit}>
-          <Textarea
-            className="h-24 resize-none"
-            placeholder="Ask PipeIQ to explain blockers, summarize approvals, or plan launch steps"
-            value={chatPrompt}
-            onChange={(event) => onPromptChange(event.target.value)}
-          />
-          <div className="grid h-full grid-rows-2 gap-3">
-            <Button className="min-w-28" disabled={isChatPending} type="submit">
-              {isChatPending ? 'Streaming...' : 'Ask agent'}
-            </Button>
-            <Button
-              className="min-w-28"
-              disabled={isActingAgent}
-              type="button"
-              variant="outline"
-              onClick={() => void onExecuteAgent()}
-            >
-              {isActingAgent ? 'Executing...' : 'Run action'}
-            </Button>
+            ) : null}
           </div>
+        )}
+      </div>
+
+      {/* Input bar */}
+      <div className="shrink-0 border-t border-border bg-card px-4 py-3">
+        <form className="mx-auto flex max-w-2xl gap-2" onSubmit={onPromptSubmit}>
+          <Textarea
+            className="h-[52px] flex-1 resize-none text-sm"
+            placeholder="Ask about your pipeline, blockers, or next steps…"
+            value={chatPrompt}
+            onChange={(e) => onPromptChange(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault()
+                e.currentTarget.form?.requestSubmit()
+              }
+            }}
+          />
+          <Button className="h-[52px] px-5" disabled={isChatPending} type="submit">
+            {isChatPending ? <CircleDot className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
+          </Button>
         </form>
-      </CardContent>
-      </Card>
-    </div>
-  )
-}
-
-function StatusRow({
-  icon: Icon,
-  label,
-  value,
-}: {
-  icon: typeof Users
-  label: string
-  value: string
-}) {
-  return (
-    <div className="flex items-center justify-between rounded-xl border border-border px-3 py-2">
-      <div className="flex items-center gap-2 text-sm text-muted-foreground">
-        <Icon className="h-4 w-4" />
-        <span>{label}</span>
-      </div>
-      <span className="text-sm font-medium">{value}</span>
-    </div>
-  )
-}
-
-function ReadinessRow({
-  label,
-  tone,
-  value,
-}: {
-  label: string
-  tone: 'default' | 'warning' | 'success'
-  value: string
-}) {
-  return (
-    <div className="flex items-center justify-between rounded-xl border border-border bg-secondary/30 px-4 py-3">
-      <span className="text-sm text-muted-foreground">{label}</span>
-      <Badge variant={tone === 'warning' ? 'warning' : tone === 'success' ? 'success' : 'outline'}>
-        {value}
-      </Badge>
-    </div>
-  )
-}
-
-function ReviewNote({
-  icon: Icon,
-  title,
-  description,
-}: {
-  icon: typeof Bot
-  title: string
-  description: string
-}) {
-  return (
-    <div className="flex gap-3 rounded-xl border border-border p-4">
-      <div className="mt-0.5 rounded-lg bg-secondary p-2">
-        <Icon className="h-4 w-4" />
-      </div>
-      <div>
-        <p className="font-medium">{title}</p>
-        <p className="text-sm text-muted-foreground">{description}</p>
       </div>
     </div>
   )

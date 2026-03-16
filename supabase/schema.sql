@@ -151,6 +151,17 @@ create table if not exists performance_metrics (
     unique (workspace_id, week_start)
 );
 
+create table if not exists org_monthly_usage (
+    id uuid primary key default gen_random_uuid(),
+    org_id uuid not null references organizations(id) on delete cascade,
+    metric text not null,
+    period_start date not null,
+    used_count integer not null default 0,
+    created_at timestamptz not null default now(),
+    updated_at timestamptz not null default now(),
+    unique (org_id, metric, period_start)
+);
+
 create table if not exists chat_messages (
     id uuid primary key default gen_random_uuid(),
     workspace_id uuid not null references workspaces(id) on delete cascade,
@@ -188,3 +199,79 @@ create index if not exists approval_queue_workspace_status_idx on approval_queue
 create index if not exists replies_workspace_created_idx on replies (workspace_id, created_at desc);
 create index if not exists meetings_workspace_scheduled_idx on meetings (workspace_id, scheduled_at desc);
 create index if not exists chat_messages_workspace_created_idx on chat_messages (workspace_id, created_at desc);
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- RAG / Knowledge pipelines
+-- ─────────────────────────────────────────────────────────────────────────────
+
+create extension if not exists vector;
+
+create table if not exists knowledge_chunks (
+    id            uuid primary key default gen_random_uuid(),
+    workspace_id  uuid not null references workspaces(id) on delete cascade,
+    pipeline      text not null,          -- 'playbooks' | 'company'
+    content       text not null,
+    metadata_json jsonb not null default '{}',
+    embedding     vector(1536),
+    created_at    timestamptz not null default now()
+);
+
+create index if not exists knowledge_chunks_embedding_idx
+    on knowledge_chunks using ivfflat (embedding vector_cosine_ops)
+    with (lists = 100);
+
+create index if not exists knowledge_chunks_workspace_pipeline_idx
+    on knowledge_chunks (workspace_id, pipeline);
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- Adaptive learning signals
+-- ─────────────────────────────────────────────────────────────────────────────
+
+create table if not exists adaptive_signals (
+    id              uuid primary key default gen_random_uuid(),
+    workspace_id    uuid not null references workspaces(id) on delete cascade,
+    signal_type     text not null,    -- 'reply_correction' | 'approval_rejection'
+    original_value  text,
+    corrected_value text,
+    context_json    jsonb not null default '{}',
+    created_at      timestamptz not null default now()
+);
+
+create index if not exists adaptive_signals_workspace_idx
+    on adaptive_signals (workspace_id, created_at desc);
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- pgvector similarity search RPC used by lib/rag.ts
+-- ─────────────────────────────────────────────────────────────────────────────
+
+create or replace function match_knowledge_chunks(
+    query_embedding     vector(1536),
+    workspace_id_filter uuid,
+    pipeline_filter     text,
+    match_count         int default 5
+)
+returns table (
+    id            uuid,
+    content       text,
+    metadata_json jsonb,
+    similarity    float
+)
+language sql stable
+as $$
+    select
+        kc.id,
+        kc.content,
+        kc.metadata_json,
+        1 - (kc.embedding <=> query_embedding) as similarity
+    from knowledge_chunks kc
+    where kc.workspace_id = workspace_id_filter
+      and kc.pipeline     = pipeline_filter
+      and kc.embedding    is not null
+    order by kc.embedding <=> query_embedding
+    limit match_count;
+$$;
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- Observability: input/output snapshots stored in audit_log metadata_json
+-- (no DDL change needed — snapshots written as metadata keys)
+-- ─────────────────────────────────────────────────────────────────────────────

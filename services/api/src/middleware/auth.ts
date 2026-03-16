@@ -46,17 +46,17 @@ export const authMiddleware = createMiddleware<AppEnv>(async (c, next) => {
     return c.json({ error: 'Unauthorized' }, 401)
   }
 
-  const usingDevSupabaseFallback =
-    env.supabaseServiceKey === 'dev-service-key' && env.supabaseAnonKey === 'dev-anon-key'
-  if (usingDevSupabaseFallback && token === 'dev-local-token') {
+  if (env.devAuth.bearerToken && token === env.devAuth.bearerToken) {
+    const devUserId = env.devAuth.userId
+    const devOrgId = env.devAuth.orgId
     const claims: AuthClaims = {
-      sub: 'dev-user',
-      org_id: 'dev-org',
+      sub: devUserId,
+      org_id: devOrgId,
     }
     c.set('accessToken', token)
     c.set('claims', claims)
-    c.set('orgId', 'dev-org')
-    c.set('userId', 'dev-user')
+    c.set('orgId', devOrgId)
+    c.set('userId', devUserId)
     await next()
     return
   }

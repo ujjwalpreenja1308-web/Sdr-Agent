@@ -71,6 +71,11 @@ export interface Contact {
   never_contact: boolean
   signal_type: string | null
   signal_detail: string | null
+  quality_score: number | null
+  email_verification_status: string
+  email_verification_score: number | null
+  email_verification_note: string | null
+  verification_checked_at: string | null
   created_at: string
 }
 
@@ -187,5 +192,65 @@ export interface AuditLog {
   actor_type: string
   actor_id: string | null
   metadata_json: JsonObject
+  created_at: string
+}
+
+// ─── Deliverability / Email Warming ──────────────────────────────────────────
+
+export type WarmingInboxStatus = 'active' | 'paused' | 'error' | string
+
+export interface WarmingInbox {
+  id: string
+  workspace_id: string
+  email: string
+  display_name: string | null
+  smtp_host: string
+  smtp_port: number
+  smtp_user: string
+  smtp_pass_enc: string   // AES-encrypted, never sent to frontend
+  smtp_secure: boolean
+  imap_host: string
+  imap_port: number
+  imap_user: string
+  imap_pass_enc: string   // AES-encrypted, never sent to frontend
+  daily_target: number
+  current_daily_sent: number
+  warmup_enabled: boolean
+  use_for_outreach: boolean
+  health_score: number
+  spam_rate: number
+  bounce_rate: number
+  inbox_placement_rate: number
+  last_warmed_at: string | null
+  status: WarmingInboxStatus
+  error_note: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface WarmingLog {
+  id: string
+  workspace_id: string
+  sender_inbox_id: string
+  recipient_inbox_id: string | null
+  direction: 'sent' | 'received' | string
+  message_id: string | null
+  subject: string | null
+  opened: boolean
+  replied: boolean
+  moved_to_inbox: boolean
+  landed_in_spam: boolean
+  created_at: string
+}
+
+export interface WarmingSchedule {
+  id: string
+  inbox_id: string
+  date: string
+  target_sends: number
+  actual_sends: number
+  actual_opens: number
+  actual_replies: number
+  spam_hits: number
   created_at: string
 }

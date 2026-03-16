@@ -1,4 +1,4 @@
-@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700&family=Geist+Mono:wght@400;500&display=swap');
 
 @tailwind base;
 @tailwind components;
@@ -6,36 +6,61 @@
 
 @layer base {
   :root {
-    --background: 220 23% 97%;
-    --foreground: 224 24% 14%;
+    /* Surfaces */
+    --background: 0 0% 95.5%;
+    --foreground: 0 0% 8%;
     --card: 0 0% 100%;
-    --card-foreground: 224 24% 14%;
+    --card-foreground: 0 0% 8%;
     --popover: 0 0% 100%;
-    --popover-foreground: 224 24% 14%;
-    --primary: 221 65% 48%;
-    --primary-foreground: 210 40% 98%;
-    --secondary: 220 20% 95%;
-    --secondary-foreground: 224 24% 14%;
-    --muted: 220 20% 95%;
-    --muted-foreground: 220 10% 42%;
-    --accent: 220 20% 95%;
-    --accent-foreground: 224 24% 14%;
-    --border: 220 15% 90%;
-    --input: 220 15% 90%;
-    --ring: 221 65% 48%;
+    --popover-foreground: 0 0% 8%;
+    --sidebar: 0 0% 100%;
+
+    /* Brand */
+    --primary: 221 83% 53%;
+    --primary-foreground: 0 0% 100%;
+
+    /* Neutrals */
+    --secondary: 0 0% 93%;
+    --secondary-foreground: 0 0% 20%;
+    --muted: 0 0% 93%;
+    --muted-foreground: 0 0% 45%;
+    --accent: 221 83% 96%;
+    --accent-foreground: 221 83% 38%;
+
+    /* Structure */
+    --border: 0 0% 88%;
+    --border-strong: 0 0% 78%;
+    --input: 0 0% 88%;
+    --ring: 221 83% 53%;
+
+    /* Semantic */
+    --success: 142 69% 42%;
+    --success-subtle: 142 69% 96%;
+    --success-text: 142 69% 28%;
+    --warning: 38 90% 48%;
+    --warning-subtle: 38 90% 96%;
+    --warning-text: 38 72% 28%;
+    --danger: 0 82% 58%;
+    --danger-subtle: 0 82% 97%;
+    --danger-text: 0 72% 38%;
   }
 
-  * {
-    @apply border-border;
-  }
+  * { box-sizing: border-box; }
 
-  html,
-  body,
-  #root {
-    @apply h-full;
-  }
+  html, body, #root { @apply h-full; }
 
   body {
-    @apply bg-background font-sans text-foreground antialiased;
+    font-family: 'Geist', -apple-system, BlinkMacSystemFont, sans-serif;
+    @apply bg-background text-foreground antialiased;
+    font-feature-settings: 'rlig' 1, 'calt' 1;
+    -webkit-font-smoothing: antialiased;
   }
+
+  ::-webkit-scrollbar { width: 5px; height: 5px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb {
+    background: hsl(var(--border-strong));
+    border-radius: 99px;
+  }
+  ::-webkit-scrollbar-thumb:hover { background: hsl(var(--muted-foreground)); }
 }

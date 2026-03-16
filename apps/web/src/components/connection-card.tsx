@@ -23,12 +23,9 @@ export function ConnectionCard({
   const [secretHint, setSecretHint] = useState('')
 
   return (
-    <Card className="h-full">
-      <CardHeader className="pb-4">
+    <Card>
+      <CardHeader>
         <div>
-          <Badge variant="outline" className="mb-2">
-            {connection.category}
-          </Badge>
           <CardTitle>{connection.label}</CardTitle>
           <CardDescription>{connection.description}</CardDescription>
         </div>
@@ -44,19 +41,19 @@ export function ConnectionCard({
           {connection.status.replace('_', ' ')}
         </Badge>
       </CardHeader>
-      <CardContent className="flex h-[calc(100%-92px)] flex-col gap-3">
-        <div className="rounded-xl border border-border bg-secondary/50 p-3 text-xs text-muted-foreground">
+      <CardContent className="flex flex-col gap-3 pt-0">
+        <div className="rounded-lg border border-border bg-secondary/30 px-3 py-2 text-xs text-muted-foreground">
           <div>{connection.required_for_phase}</div>
-          <div>{connection.mode === 'oauth' ? 'Manual Composio OAuth' : 'API key setup'}</div>
+          <div className="mt-0.5 text-muted-foreground/70">{connection.mode === 'oauth' ? 'Composio OAuth' : 'API key'}</div>
         </div>
 
         {connection.mode === 'oauth' ? (
-          <Button className="mt-auto" disabled={busy} onClick={() => onAuthorize(connection.toolkit)} type="button">
-            {busy ? 'Launching...' : connection.status === 'connected' ? 'Reconnect' : 'Authorize'}
+          <Button size="sm" disabled={busy} onClick={() => onAuthorize(connection.toolkit)} type="button">
+            {busy ? 'Launching…' : connection.status === 'connected' ? 'Reconnect' : 'Authorize'}
           </Button>
         ) : (
           <form
-            className="mt-auto grid gap-2"
+            className="grid gap-2"
             onSubmit={(event) => {
               event.preventDefault()
               void onSaveApiKey(connection.toolkit, label, secretHint)
@@ -68,8 +65,8 @@ export function ConnectionCard({
               value={secretHint}
               onChange={(event) => setSecretHint(event.target.value)}
             />
-            <Button disabled={busy || !secretHint.trim()} type="submit">
-              {busy ? 'Saving...' : 'Save'}
+            <Button size="sm" disabled={busy || !secretHint.trim()} type="submit">
+              {busy ? 'Saving…' : 'Save'}
             </Button>
           </form>
         )}

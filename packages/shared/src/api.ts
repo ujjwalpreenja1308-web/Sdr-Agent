@@ -1,3 +1,5 @@
+import type { JsonObject } from './entities.js'
+
 export type ConnectionMode = 'oauth' | 'api_key'
 export type ConnectionState = 'not_connected' | 'pending' | 'connected'
 
@@ -19,6 +21,40 @@ export interface MetricCard {
   caption: string
 }
 
+export interface OperatorEvent {
+  id: string
+  workspace_id: string
+  action: string
+  entity_type: string
+  entity_id: string | null
+  actor_type: string
+  actor_id: string | null
+  summary: string
+  metadata_json: JsonObject
+  created_at: string
+}
+
+export type ExecutionRunStatus =
+  | 'started'
+  | 'completed'
+  | 'failed'
+  | 'skipped'
+  | 'in_progress'
+
+export interface ExecutionRun {
+  id: string
+  workspace_id: string
+  scope: string
+  execution_key: string
+  status: ExecutionRunStatus
+  summary: string
+  actor_type: string
+  actor_id: string | null
+  started_at: string
+  completed_at: string | null
+  metadata_json: JsonObject
+}
+
 export interface BuildPhase {
   name: string
   duration: string
@@ -38,6 +74,19 @@ export interface WorkspaceSummary {
   phases: BuildPhase[]
   strategy_questions: string[]
   connections: ConnectionTarget[]
+}
+
+export interface AuthWorkspaceOption {
+  id: string
+  name: string
+}
+
+export interface AuthSession {
+  user_id: string
+  org_id: string
+  workspace_id: string
+  workspaces: AuthWorkspaceOption[]
+  claims: Record<string, unknown>
 }
 
 export interface OnboardingProfile {
@@ -69,6 +118,8 @@ export interface ContactPreview {
   email: string
   title: string
   company: string
+  apollo_id?: string | null
+  linkedin_url?: string | null
   signal_type: string
   signal_detail: string
   quality_score: number
@@ -169,6 +220,8 @@ export interface ReplyQueueItem {
   id: string
   workspace_id: string
   contact_id: string
+  recipient_email?: string | null
+  thread_id?: string | null
   contact_name: string
   company: string
   classification:
@@ -194,6 +247,7 @@ export interface MeetingPrepItem {
   company: string
   scheduled_for: string
   status: 'prep_ready' | 'booked'
+  calendar_event_id?: string | null
   prep_brief: string[]
   owner_note: string
 }
@@ -236,7 +290,7 @@ export interface IntegrationCheckResult {
   workspace_id: string
   toolkit: string
   connection_status: 'not_connected' | 'pending' | 'connected' | 'error'
-  source: 'composio'
+  source: 'composio' | 'api_key'
   summary: string
   details: string[]
   checked_at: string
@@ -357,7 +411,7 @@ export interface ApiKeyConnectionRequest {
   external_user_id: string
   toolkit: string
   label: string
-  secret_hint: string
+  api_key: string
 }
 
 export interface ProspectVerificationRequest {
@@ -415,4 +469,159 @@ export interface StreamingChatRequest {
   workspace_id: string
   message: string
   agent_id?: AgentId
+}
+
+// ─── RAG / Knowledge ─────────────────────────────────────────────────────────
+
+export type KnowledgePipeline = 'playbooks' | 'company'
+
+export interface KnowledgeUploadRequest {
+  text?: string
+  chunks?: string[]
+}
+
+export interface KnowledgeStatus {
+  pipeline: KnowledgePipeline
+  chunk_count: number
+  last_updated: string | null
+}
+
+// ─── Bandwidth ───────────────────────────────────────────────────────────────
+
+export interface ToolCapacity {
+  toolkit: string
+  metric: string
+  value: number | null
+  unit: string
+  note: string
+}
+
+export interface BandwidthEstimate {
+  workspace_id: string
+  daily_send_capacity: number
+  monthly_lead_capacity: number
+  tool_capacities: ToolCapacity[]
+  bottleneck: string
+  recommendation: string
+  estimated_at: string
+}
+
+// ─── Observability ───────────────────────────────────────────────────────────
+
+export interface ObservabilityRun extends ExecutionRun {
+  input_snapshot?: JsonObject | null
+  output_snapshot?: JsonObject | null
+}
+
+// ─── Adaptive learning ───────────────────────────────────────────────────────
+
+export type AdaptiveSignalType = 'reply_correction' | 'approval_rejection'
+
+export interface AdaptiveSignalRequest {
+  signal_type: AdaptiveSignalType
+  original_value?: string
+  corrected_value?: string
+  context?: JsonObject
+}
+
+// ─── Extended reply decision ─────────────────────────────────────────────────
+
+export interface ReplyDecisionRequestExtended extends ReplyDecisionRequest {
+  corrected_classification?: string
+  rejection_note?: string
+}
+
+// ─── Deliverability / Email Warming ──────────────────────────────────────────
+
+/** Inbox summary sent to the frontend (passwords stripped) */
+export interface WarmingInboxSummary {
+  id: string
+  workspace_id: string
+  email: string
+  display_name: string | null
+  smtp_host: string
+  smtp_port: number
+  smtp_secure: boolean
+  imap_host: string
+  imap_port: number
+  daily_target: number
+  current_daily_sent: number
+  warmup_enabled: boolean
+  use_for_outreach: boolean
+  health_score: number
+  spam_rate: number
+  bounce_rate: number
+  inbox_placement_rate: number
+  last_warmed_at: string | null
+  status: string
+  error_note: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface WarmingInboxCreateRequest {
+  email: string
+  display_name?: string
+  smtp_host: string
+  smtp_port?: number
+  smtp_user: string
+  smtp_pass: string      // plaintext — encrypted server-side
+  smtp_secure?: boolean
+  imap_host: string
+  imap_port?: number
+  imap_user: string
+  imap_pass: string      // plaintext — encrypted server-side
+  daily_target?: number
+  use_for_outreach?: boolean
+}
+
+export interface WarmingInboxUpdateRequest {
+  display_name?: string
+  daily_target?: number
+  warmup_enabled?: boolean
+  use_for_outreach?: boolean
+  status?: string
+  // credential updates (optional)
+  smtp_pass?: string
+  imap_pass?: string
+}
+
+export interface WarmingStatsDay {
+  date: string
+  target_sends: number
+  actual_sends: number
+  actual_opens: number
+  actual_replies: number
+  spam_hits: number
+}
+
+export interface WarmingInboxStats {
+  inbox_id: string
+  email: string
+  health_score: number
+  days: WarmingStatsDay[]
+  total_sent_7d: number
+  total_opens_7d: number
+  total_replies_7d: number
+  spam_hits_7d: number
+}
+
+export interface WarmingOverview {
+  workspace_id: string
+  total_inboxes: number
+  active_inboxes: number
+  paused_inboxes: number
+  error_inboxes: number
+  total_sent_today: number
+  total_capacity_today: number
+  average_health_score: number
+  inboxes: WarmingInboxSummary[]
+}
+
+export interface WarmingRunResult {
+  workspace_id: string
+  triggered_at: string
+  inboxes_processed: number
+  emails_sent: number
+  errors: string[]
 }

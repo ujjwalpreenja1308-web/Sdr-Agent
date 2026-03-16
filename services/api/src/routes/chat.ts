@@ -22,7 +22,9 @@ import {
   getAgentCatalog,
   runAgentChat,
 } from '../agents/service.js'
+import { logWorkspaceEvent } from '../lib/activity.js'
 import { env } from '../lib/env.js'
+import { getRuntimeStore } from '../lib/runtime-store.js'
 import { ensureWorkspaceRecord, getSupabaseAdmin } from '../lib/supabase.js'
 import { enqueueAgentRun, getAgentRunState } from '../lib/trigger.js'
 import type { AppEnv } from '../types.js'
@@ -90,6 +92,7 @@ function toOpenAiMessages(history: ChatMessage[]): ChatCompletionMessageParam[] 
 chatRoutes.get('/api/agents/:workspaceId/catalog', async (c) => {
   const workspaceId = c.req.param('workspaceId')
   await ensureWorkspaceRecord(workspaceId, c.get('orgId'))
+  await getRuntimeStore().hydrateWorkspace(workspaceId, c.get('orgId'))
   const catalog: AgentCatalog = getAgentCatalog(workspaceId)
   return c.json(catalog)
 })
@@ -97,6 +100,7 @@ chatRoutes.get('/api/agents/:workspaceId/catalog', async (c) => {
 chatRoutes.post('/api/agents/plan', async (c) => {
   const payload = await c.req.json<AgentPlanRequest>()
   await ensureWorkspaceRecord(payload.workspace_id, c.get('orgId'))
+  await getRuntimeStore().hydrateWorkspace(payload.workspace_id, c.get('orgId'))
   const plan: AgentPlan = buildAgentPlan(
     payload.workspace_id,
     payload.prompt,
@@ -108,11 +112,28 @@ chatRoutes.post('/api/agents/plan', async (c) => {
 chatRoutes.post('/api/agents/act', async (c) => {
   const payload = await c.req.json<AgentActionRequest>()
   await ensureWorkspaceRecord(payload.workspace_id, c.get('orgId'))
+  const store = getRuntimeStore()
+  await store.hydrateWorkspace(payload.workspace_id, c.get('orgId'))
   const result: AgentActionResult = await executeAgentAction({
     workspaceId: payload.workspace_id,
     orgId: c.get('orgId'),
     ...(payload.prompt ? { prompt: payload.prompt } : {}),
     ...(payload.agent_id ? { preferredAgentId: payload.agent_id } : {}),
+  })
+  await store.persistWorkspace(payload.workspace_id, c.get('orgId'))
+  await logWorkspaceEvent({
+    workspaceId: payload.workspace_id,
+    action: result.executed ? 'agent.action.executed' : 'agent.action.blocked',
+    entityType: 'agent_run',
+    entityId: result.selected_agent_id,
+    actorType: 'agent',
+    actorId: result.selected_agent_id,
+    summary: result.summary,
+    metadata: {
+      selected_agent_id: result.selected_agent_id,
+      executed: result.executed,
+      next_action: result.next_action ?? null,
+    },
   })
   return c.json(result)
 })
@@ -120,9 +141,23 @@ chatRoutes.post('/api/agents/act', async (c) => {
 chatRoutes.post('/api/agents/act/async', async (c) => {
   const payload = await c.req.json<AgentActionRequest>()
   await ensureWorkspaceRecord(payload.workspace_id, c.get('orgId'))
+  await getRuntimeStore().hydrateWorkspace(payload.workspace_id, c.get('orgId'))
 
   try {
     const result: AgentActionRun = await enqueueAgentRun(payload, c.get('orgId'))
+    await logWorkspaceEvent({
+      workspaceId: payload.workspace_id,
+      action: 'agent.run.queued',
+      entityType: 'agent_run',
+      entityId: result.run_id,
+      actorType: 'user',
+      actorId: c.get('userId'),
+      summary: `Queued ${result.selected_agent_label} for background execution.`,
+      metadata: {
+        task_id: result.task_id,
+        selected_agent_id: result.selected_agent_id,
+      },
+    })
     return c.json(result, 202)
   } catch (error) {
     return c.json(
@@ -160,6 +195,7 @@ chatRoutes.get('/api/agents/runs/:runId', async (c) => {
 chatRoutes.post('/chat', async (c) => {
   const payload = await c.req.json<StreamingChatRequest>()
   await ensureWorkspaceRecord(payload.workspace_id, c.get('orgId'))
+  await getRuntimeStore().hydrateWorkspace(payload.workspace_id, c.get('orgId'))
 
   const history = await loadRecentChatMessages(payload.workspace_id)
   await saveChatMessage(payload.workspace_id, 'user', payload.message)
@@ -223,6 +259,7 @@ chatRoutes.post('/chat', async (c) => {
 chatRoutes.post('/api/agents/chat', async (c) => {
   const payload = await c.req.json<AgentChatRequest>()
   await ensureWorkspaceRecord(payload.workspace_id, c.get('orgId'))
+  await getRuntimeStore().hydrateWorkspace(payload.workspace_id, c.get('orgId'))
   const history = await loadRecentChatMessages(payload.workspace_id)
   await saveChatMessage(payload.workspace_id, 'user', payload.prompt)
   const { content, result } = await runAgentChat({
@@ -232,6 +269,18 @@ chatRoutes.post('/api/agents/chat', async (c) => {
     ...(payload.agent_id ? { preferredAgentId: payload.agent_id } : {}),
   })
   await saveChatMessage(payload.workspace_id, 'assistant', content)
+  await logWorkspaceEvent({
+    workspaceId: payload.workspace_id,
+    action: 'agent.chat.completed',
+    entityType: 'chat_message',
+    actorType: 'agent',
+    actorId: result.selected_agent_id ?? 'operator',
+    summary: `Completed a chat response with ${result.selected_agent_label ?? 'PipeIQ AI'}.`,
+    metadata: {
+      selected_agent_id: result.selected_agent_id ?? null,
+      model_mode: result.model_mode,
+    },
+  })
 
   const typedResult: AgentChatResponse = result
   return c.json(typedResult)

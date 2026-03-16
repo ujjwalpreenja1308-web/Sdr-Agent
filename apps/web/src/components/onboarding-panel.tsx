@@ -1,283 +1,747 @@
-import { CheckCircle2, Save } from 'lucide-react'
+import { ArrowLeft, ArrowRight, Check, Sparkles } from 'lucide-react'
+import { useState } from 'react'
 import type { ReactNode } from 'react'
 
-import type { ApprovalItem, OnboardingProfile, WorkspaceSummary } from '../lib/api'
+import type { OnboardingProfile } from '../lib/api'
 import {
   calculateOnboardingProgress,
   type OnboardingListField,
   type OnboardingTextField,
 } from '../lib/onboarding'
-import { Badge } from './ui/badge'
-import { Button } from './ui/button'
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './ui/card'
-import { Input } from './ui/input'
-import { Textarea } from './ui/textarea'
 
 type OnboardingPanelProps = {
   connectedCount: number
   onboarding: OnboardingProfile
   onboardingDirty: boolean
-  pendingApprovals: ApprovalItem[]
+  pendingApprovals: { id: string }[]
   prospectStatus: 'idle' | 'completed'
-  requiredConnections: WorkspaceSummary['connections']
+  requiredConnections: { status: string }[]
   saving: boolean
-  workspace: WorkspaceSummary
+  workspace: { name: string; onboarding_completed: boolean }
   onListChange: (field: OnboardingListField, value: string) => void
   onSave: () => Promise<void>
   onTabChange: (tab: 'overview' | 'integrations' | 'prospects' | 'pipeline') => void
   onTextChange: (field: OnboardingTextField, value: string) => void
 }
 
+type StepId = 'company' | 'messaging' | 'icp'
+
+const STEPS: { id: StepId; label: string; title: string; subtitle: string }[] = [
+  {
+    id: 'company',
+    label: 'Company',
+    title: "What are you\nbuilding?",
+    subtitle: 'Tell us about your product and what you sell.',
+  },
+  {
+    id: 'messaging',
+    label: 'Messaging',
+    title: "How do you\nwin deals?",
+    subtitle: 'Define your value proposition and voice.',
+  },
+  {
+    id: 'icp',
+    label: 'Target',
+    title: "Who's your\nbest customer?",
+    subtitle: 'Define who should receive your outreach.',
+  },
+]
+
 export function OnboardingPanel({
-  connectedCount,
   onboarding,
   onboardingDirty,
-  pendingApprovals,
-  prospectStatus,
-  requiredConnections,
   saving,
-  workspace,
   onListChange,
   onSave,
   onTabChange,
   onTextChange,
 }: OnboardingPanelProps) {
+  const [step, setStep] = useState(0)
+  const [animDir, setAnimDir] = useState<'forward' | 'back'>('forward')
+  const [isAnimating, setIsAnimating] = useState(false)
+  const [visibleStep, setVisibleStep] = useState(0)
   const completion = calculateOnboardingProgress(onboarding)
+  const isLast = step === STEPS.length - 1
+  const canFinish = completion >= 60
+
+  function goTo(next: number, dir: 'forward' | 'back') {
+    if (isAnimating) return
+    setAnimDir(dir)
+    setIsAnimating(true)
+    setTimeout(() => {
+      setVisibleStep(next)
+      setStep(next)
+      setIsAnimating(false)
+    }, 280)
+  }
+
+  function handleNext() {
+    if (!isLast) {
+      goTo(step + 1, 'forward')
+    }
+  }
+
+  function handleBack() {
+    if (step > 0) {
+      goTo(step - 1, 'back')
+    }
+  }
+
+  async function handleFinish() {
+    await onSave()
+    onTabChange('integrations')
+  }
 
   return (
-    <div className="grid h-full grid-cols-[1.15fr_0.85fr] gap-4 overflow-hidden">
-      <Card className="h-full shadow-none">
-        <CardHeader>
-          <div>
-            <Badge variant="outline" className="mb-2">
-              Phase 1 intake
-            </Badge>
-            <CardTitle>Capture the strategy before the agents run</CardTitle>
-            <CardDescription>
-              The PRD starts with a short founder intake. PipeIQ should not prospect, write,
-              or route replies against guesswork.
-            </CardDescription>
+    <div className="onboarding-fullscreen">
+      <style>{`
+        .onboarding-fullscreen {
+          position: fixed;
+          inset: 0;
+          z-index: 50;
+          display: flex;
+          flex-direction: column;
+          background: #0a0a0f;
+          color: #f0f0f5;
+          font-family: 'Inter', system-ui, sans-serif;
+          overflow: hidden;
+        }
+
+        /* Top bar */
+        .ob-topbar {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          padding: 20px 40px;
+          flex-shrink: 0;
+        }
+
+        .ob-logo {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+        }
+
+        .ob-logo-icon {
+          width: 28px;
+          height: 28px;
+          border-radius: 8px;
+          background: linear-gradient(135deg, #7c6af7, #5b4fcf);
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          box-shadow: 0 0 20px rgba(124, 106, 247, 0.4);
+        }
+
+        .ob-logo-text {
+          font-size: 14px;
+          font-weight: 600;
+          letter-spacing: -0.02em;
+          color: #f0f0f5;
+        }
+
+        /* Steps indicator */
+        .ob-steps {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+        }
+
+        .ob-step-item {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          cursor: pointer;
+        }
+
+        .ob-step-dot {
+          width: 28px;
+          height: 28px;
+          border-radius: 50%;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          font-size: 12px;
+          font-weight: 600;
+          transition: all 0.3s ease;
+          flex-shrink: 0;
+        }
+
+        .ob-step-dot.active {
+          background: linear-gradient(135deg, #7c6af7, #5b4fcf);
+          color: white;
+          box-shadow: 0 0 16px rgba(124, 106, 247, 0.5);
+        }
+
+        .ob-step-dot.done {
+          background: rgba(124, 106, 247, 0.2);
+          color: #7c6af7;
+          border: 1px solid rgba(124, 106, 247, 0.4);
+        }
+
+        .ob-step-dot.upcoming {
+          background: rgba(255, 255, 255, 0.05);
+          color: rgba(255, 255, 255, 0.3);
+          border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .ob-step-label {
+          font-size: 12px;
+          font-weight: 500;
+          transition: color 0.3s ease;
+        }
+
+        .ob-step-label.active { color: #f0f0f5; }
+        .ob-step-label.done { color: rgba(124, 106, 247, 0.8); }
+        .ob-step-label.upcoming { color: rgba(255, 255, 255, 0.25); }
+
+        .ob-step-connector {
+          width: 24px;
+          height: 1px;
+          background: rgba(255, 255, 255, 0.1);
+          flex-shrink: 0;
+        }
+
+        /* Main content */
+        .ob-main {
+          flex: 1;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          padding: 0 40px 40px;
+          overflow: hidden;
+          position: relative;
+        }
+
+        .ob-content {
+          width: 100%;
+          max-width: 560px;
+          display: flex;
+          flex-direction: column;
+          gap: 0;
+        }
+
+        /* Animation states */
+        .ob-slide {
+          transition: opacity 0.28s ease, transform 0.28s ease;
+        }
+
+        .ob-slide.entering-forward {
+          opacity: 0;
+          transform: translateX(32px);
+        }
+
+        .ob-slide.entering-back {
+          opacity: 0;
+          transform: translateX(-32px);
+        }
+
+        .ob-slide.visible {
+          opacity: 1;
+          transform: translateX(0);
+        }
+
+        .ob-slide.exiting-forward {
+          opacity: 0;
+          transform: translateX(-32px);
+        }
+
+        .ob-slide.exiting-back {
+          opacity: 0;
+          transform: translateX(32px);
+        }
+
+        /* Title */
+        .ob-title {
+          font-size: clamp(32px, 5vw, 52px);
+          font-weight: 700;
+          letter-spacing: -0.03em;
+          line-height: 1.1;
+          white-space: pre-line;
+          margin-bottom: 12px;
+          background: linear-gradient(135deg, #ffffff 0%, rgba(255,255,255,0.7) 100%);
+          -webkit-background-clip: text;
+          -webkit-text-fill-color: transparent;
+          background-clip: text;
+        }
+
+        .ob-subtitle {
+          font-size: 15px;
+          color: rgba(255, 255, 255, 0.45);
+          margin-bottom: 44px;
+          line-height: 1.6;
+        }
+
+        /* Fields */
+        .ob-fields {
+          display: flex;
+          flex-direction: column;
+          gap: 24px;
+        }
+
+        .ob-field {
+          display: flex;
+          flex-direction: column;
+          gap: 8px;
+        }
+
+        .ob-field-label {
+          font-size: 12px;
+          font-weight: 600;
+          letter-spacing: 0.06em;
+          text-transform: uppercase;
+          color: rgba(255, 255, 255, 0.35);
+        }
+
+        .ob-field-hint {
+          font-size: 12px;
+          color: rgba(255, 255, 255, 0.25);
+          margin-top: -4px;
+        }
+
+        .ob-input, .ob-textarea {
+          width: 100%;
+          background: rgba(255, 255, 255, 0.04);
+          border: 1px solid rgba(255, 255, 255, 0.08);
+          border-radius: 12px;
+          padding: 14px 16px;
+          font-size: 15px;
+          color: rgba(255, 255, 255, 0.9);
+          outline: none;
+          transition: all 0.2s ease;
+          font-family: inherit;
+          box-sizing: border-box;
+        }
+
+        .ob-input::placeholder, .ob-textarea::placeholder {
+          color: rgba(255, 255, 255, 0.18);
+        }
+
+        .ob-input:focus, .ob-textarea:focus {
+          border-color: rgba(124, 106, 247, 0.5);
+          background: rgba(124, 106, 247, 0.06);
+          box-shadow: 0 0 0 3px rgba(124, 106, 247, 0.1);
+        }
+
+        .ob-textarea {
+          resize: none;
+          line-height: 1.6;
+          height: 96px;
+        }
+
+        .ob-field-grid {
+          display: grid;
+          grid-template-columns: 1fr 1fr;
+          gap: 16px;
+        }
+
+        /* Bottom nav */
+        .ob-nav {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          margin-top: 40px;
+        }
+
+        .ob-btn-ghost {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          padding: 10px 16px;
+          background: transparent;
+          border: 1px solid rgba(255, 255, 255, 0.1);
+          border-radius: 10px;
+          color: rgba(255, 255, 255, 0.4);
+          font-size: 14px;
+          font-weight: 500;
+          cursor: pointer;
+          transition: all 0.2s ease;
+          font-family: inherit;
+        }
+
+        .ob-btn-ghost:hover:not(:disabled) {
+          border-color: rgba(255, 255, 255, 0.2);
+          color: rgba(255, 255, 255, 0.7);
+          background: rgba(255, 255, 255, 0.04);
+        }
+
+        .ob-btn-ghost:disabled {
+          opacity: 0.3;
+          cursor: not-allowed;
+        }
+
+        .ob-btn-primary {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          padding: 12px 24px;
+          background: linear-gradient(135deg, #7c6af7, #5b4fcf);
+          border: none;
+          border-radius: 10px;
+          color: white;
+          font-size: 14px;
+          font-weight: 600;
+          cursor: pointer;
+          transition: all 0.2s ease;
+          font-family: inherit;
+          box-shadow: 0 4px 20px rgba(124, 106, 247, 0.35);
+        }
+
+        .ob-btn-primary:hover:not(:disabled) {
+          transform: translateY(-1px);
+          box-shadow: 0 6px 28px rgba(124, 106, 247, 0.5);
+        }
+
+        .ob-btn-primary:active:not(:disabled) {
+          transform: translateY(0);
+        }
+
+        .ob-btn-primary:disabled {
+          opacity: 0.5;
+          cursor: not-allowed;
+          transform: none;
+        }
+
+        .ob-btn-finish {
+          background: linear-gradient(135deg, #22c55e, #16a34a);
+          box-shadow: 0 4px 20px rgba(34, 197, 94, 0.3);
+        }
+
+        .ob-btn-finish:hover:not(:disabled) {
+          box-shadow: 0 6px 28px rgba(34, 197, 94, 0.45);
+        }
+
+        .ob-btn-finish.blocked {
+          background: linear-gradient(135deg, #7c6af7, #5b4fcf);
+          box-shadow: 0 4px 20px rgba(124, 106, 247, 0.35);
+        }
+
+        /* Progress bar at top */
+        .ob-progress-bar {
+          position: absolute;
+          top: 0;
+          left: 0;
+          height: 2px;
+          background: linear-gradient(90deg, #7c6af7, #5b4fcf);
+          transition: width 0.5s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+
+        /* Save indicator */
+        .ob-save-pill {
+          display: flex;
+          align-items: center;
+          gap: 6px;
+          font-size: 12px;
+          color: rgba(255, 255, 255, 0.35);
+          padding: 6px 12px;
+          background: rgba(255, 255, 255, 0.04);
+          border-radius: 20px;
+          border: 1px solid rgba(255, 255, 255, 0.08);
+        }
+
+        /* Background ambience */
+        .ob-bg-glow {
+          position: fixed;
+          width: 600px;
+          height: 600px;
+          border-radius: 50%;
+          filter: blur(120px);
+          pointer-events: none;
+          opacity: 0.12;
+          z-index: 0;
+        }
+
+        .ob-bg-glow-1 {
+          top: -200px;
+          right: -100px;
+          background: #7c6af7;
+        }
+
+        .ob-bg-glow-2 {
+          bottom: -200px;
+          left: -200px;
+          background: #5b4fcf;
+          opacity: 0.08;
+        }
+
+        .ob-content-wrapper {
+          position: relative;
+          z-index: 1;
+          display: flex;
+          flex-direction: column;
+          height: 100%;
+        }
+      `}</style>
+
+      {/* Background glow */}
+      <div className="ob-bg-glow ob-bg-glow-1" />
+      <div className="ob-bg-glow ob-bg-glow-2" />
+
+      {/* Progress bar */}
+      <div className="ob-progress-bar" style={{ width: `${completion}%` }} />
+
+      <div className="ob-content-wrapper">
+        {/* Top bar */}
+        <div className="ob-topbar">
+          <div className="ob-logo">
+            <div className="ob-logo-icon">
+              <Sparkles style={{ width: 14, height: 14, color: 'white' }} />
+            </div>
+            <span className="ob-logo-text">PipeIQ</span>
           </div>
-          <Badge variant={completion >= 80 ? 'success' : 'warning'}>{completion}% complete</Badge>
-        </CardHeader>
-        <CardContent className="flex h-[calc(100%-92px)] flex-col">
-          <div className="grid flex-1 grid-cols-2 gap-3">
-            <Field label="Product name" hint="What are you selling?">
-              <Input
-                placeholder="PipeIQ"
-                value={onboarding.product_name}
-                onChange={(event) => onTextChange('product_name', event.target.value)}
-              />
-            </Field>
 
-            <Field label="Call to action" hint="Meeting, teardown, audit, or another CTA">
-              <Input
-                placeholder="20-minute outbound teardown"
-                value={onboarding.call_to_action}
-                onChange={(event) => onTextChange('call_to_action', event.target.value)}
-              />
-            </Field>
-
-            <Field label="Product description" hint="One compact explanation of the offer">
-              <Textarea
-                className="h-20 min-h-0 resize-none"
-                placeholder="AI-powered outbound platform that finds leads, writes full emails, handles replies, and books meetings."
-                value={onboarding.product_description}
-                onChange={(event) => onTextChange('product_description', event.target.value)}
-              />
-            </Field>
-
-            <Field label="Value proposition" hint="How you win versus status quo or alternatives">
-              <Textarea
-                className="h-20 min-h-0 resize-none"
-                placeholder="We replace founder-led outbound and variable-based email templates with fully pre-rendered campaigns."
-                value={onboarding.value_proposition}
-                onChange={(event) => onTextChange('value_proposition', event.target.value)}
-              />
-            </Field>
-
-            <Field label="Target customer" hint="Your highest-conviction ICP right now">
-              <Textarea
-                className="h-20 min-h-0 resize-none"
-                placeholder="B2B SaaS founders or first sales hires at pre-seed to Series A companies with no SDR team."
-                value={onboarding.target_customer}
-                onChange={(event) => onTextChange('target_customer', event.target.value)}
-              />
-            </Field>
-
-            <Field label="Pain points" hint="What urgency should appear in email one">
-              <Textarea
-                className="h-20 min-h-0 resize-none"
-                placeholder="Outbound depends on the founder, reply handling is manual, and generic sequences hurt sender reputation."
-                value={onboarding.pain_points}
-                onChange={(event) => onTextChange('pain_points', event.target.value)}
-              />
-            </Field>
-
-            <Field label="Voice guidelines" hint="How the writing should sound">
-              <Input
-                placeholder="Direct, specific, founder-level, and never robotic."
-                value={onboarding.voice_guidelines}
-                onChange={(event) => onTextChange('voice_guidelines', event.target.value)}
-              />
-            </Field>
-
-            <Field label="Industries" hint="Comma-separated">
-              <Input
-                placeholder="B2B SaaS, devtools, fintech"
-                value={listToCsv(onboarding.industries)}
-                onChange={(event) => onListChange('industries', event.target.value)}
-              />
-            </Field>
-
-            <Field label="Titles" hint="Comma-separated">
-              <Input
-                placeholder="Founder, CEO, VP Sales, RevOps"
-                value={listToCsv(onboarding.titles)}
-                onChange={(event) => onListChange('titles', event.target.value)}
-              />
-            </Field>
-
-            <Field label="Company sizes" hint="Comma-separated">
-              <Input
-                placeholder="2-30 employees, 31-100 employees"
-                value={listToCsv(onboarding.company_sizes)}
-                onChange={(event) => onListChange('company_sizes', event.target.value)}
-              />
-            </Field>
-
-            <Field label="Geographies" hint="Comma-separated">
-              <Input
-                placeholder="United States, Canada"
-                value={listToCsv(onboarding.geos)}
-                onChange={(event) => onListChange('geos', event.target.value)}
-              />
-            </Field>
-
-            <Field label="Exclusions" hint="Who should never be contacted">
-              <Input
-                placeholder="Agencies, enterprise-only teams, non-English markets"
-                value={listToCsv(onboarding.exclusions)}
-                onChange={(event) => onListChange('exclusions', event.target.value)}
-              />
-            </Field>
+          <div className="ob-steps">
+            {STEPS.map((s, i) => {
+              const state = i === step ? 'active' : i < step ? 'done' : 'upcoming'
+              return (
+                <div key={s.id} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  {i > 0 && <div className="ob-step-connector" />}
+                  <div className="ob-step-item" onClick={() => i < step && goTo(i, 'back')}>
+                    <div className={`ob-step-dot ${state}`}>
+                      {state === 'done' ? <Check style={{ width: 12, height: 12 }} /> : i + 1}
+                    </div>
+                    <span className={`ob-step-label ${state}`}>{s.label}</span>
+                  </div>
+                </div>
+              )
+            })}
           </div>
 
-          <div className="mt-4 flex items-center justify-between rounded-2xl border border-border bg-secondary/40 px-4 py-3">
-            <div>
-              <p className="text-sm font-medium">Progress drives the rest of the build</p>
-              <p className="text-sm text-muted-foreground">
-                Once this hits 80%+, the workspace is ready for Apollo prospecting and the first
-                personalization pass.
-              </p>
-            </div>
-            <div className="flex items-center gap-2">
-              <Button
-                disabled={completion < 80}
-                variant="outline"
-                onClick={() => onTabChange('integrations')}
-                type="button"
-              >
-                Open integrations
-              </Button>
-              <Button
-                disabled={saving || !onboardingDirty}
-                onClick={() => void onSave()}
-                type="button"
-              >
-                <Save className="mr-2 h-4 w-4" />
-                {saving ? 'Saving...' : onboardingDirty ? 'Save intake' : 'Saved'}
-              </Button>
-            </div>
+          <div className="ob-save-pill">
+            {saving ? (
+              <>
+                <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#7c6af7', display: 'inline-block' }} />
+                Saving…
+              </>
+            ) : onboardingDirty ? (
+              <>
+                <span style={{ width: 6, height: 6, borderRadius: '50%', background: 'rgba(255,255,255,0.2)', display: 'inline-block' }} />
+                Unsaved
+              </>
+            ) : (
+              <>
+                <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#22c55e', display: 'inline-block' }} />
+                {completion}% complete
+              </>
+            )}
           </div>
-        </CardContent>
-      </Card>
+        </div>
 
-      <div className="grid h-full grid-rows-[0.92fr_1fr_1fr] gap-4">
-        <Card className="shadow-none">
-          <CardHeader>
-            <div>
-              <CardTitle>Readiness summary</CardTitle>
-              <CardDescription>What still blocks the first live launch.</CardDescription>
-            </div>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            <ReadinessRow
-              label="Onboarding complete"
-              value={`${completion}%`}
-              tone={completion >= 80 ? 'success' : 'warning'}
-            />
-            <ReadinessRow
-              label="Connected tools"
-              value={String(connectedCount)}
-              tone={connectedCount > 0 ? 'success' : 'default'}
-            />
-            <ReadinessRow
-              label="Pending approvals"
-              value={String(pendingApprovals.length)}
-              tone={pendingApprovals.length > 0 ? 'warning' : 'default'}
-            />
-          </CardContent>
-        </Card>
+        {/* Main content */}
+        <div className="ob-main">
+          <div className="ob-content">
+            <StepSlide
+              isAnimating={isAnimating}
+              animDir={animDir}
+              currentStep={step}
+              visibleStep={visibleStep}
+            >
+              <h1 className="ob-title">{STEPS[visibleStep].title}</h1>
+              <p className="ob-subtitle">{STEPS[visibleStep].subtitle}</p>
 
-        <Card className="shadow-none">
-          <CardHeader>
-            <div>
-              <CardTitle>Launch checklist</CardTitle>
-              <CardDescription>The next three actions the workspace expects.</CardDescription>
-            </div>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            <ChecklistRow
-              done={workspace.onboarding_completed}
-              title="Finish founder intake"
-              description="Save enough product, ICP, and messaging context to stop using defaults."
-            />
-            <ChecklistRow
-              done={
-                requiredConnections.filter((connection) => connection.status === 'connected').length >=
-                3
-              }
-              title="Connect Apollo, Hunter, and Instantly"
-              description="These three unlock sourcing, verification, and campaign launch."
-            />
-            <ChecklistRow
-              done={prospectStatus === 'completed'}
-              title="Run Apollo prospecting"
-              description="Source and enrich the first ICP-matched set before generating drafts."
-            />
-          </CardContent>
-        </Card>
+              <div className="ob-fields">
+                {visibleStep === 0 && (
+                  <>
+                    <ObField label="Product name" hint="What are you selling?">
+                      <input
+                        className="ob-input"
+                        placeholder="Acme Inc."
+                        value={onboarding.product_name}
+                        onChange={(e) => onTextChange('product_name', e.target.value)}
+                      />
+                    </ObField>
+                    <ObField label="Product description" hint="One compact explanation of the offer">
+                      <textarea
+                        className="ob-textarea"
+                        placeholder="AI-powered outbound platform that finds leads, writes full emails, handles replies, and books meetings."
+                        value={onboarding.product_description}
+                        onChange={(e) => onTextChange('product_description', e.target.value)}
+                      />
+                    </ObField>
+                    <ObField label="Call to action" hint="The goal of your outreach">
+                      <input
+                        className="ob-input"
+                        placeholder="Book a 20-minute growth session"
+                        value={onboarding.call_to_action}
+                        onChange={(e) => onTextChange('call_to_action', e.target.value)}
+                      />
+                    </ObField>
+                  </>
+                )}
 
-        <Card className="shadow-none">
-          <CardHeader>
-            <div>
-              <CardTitle>Current strategy view</CardTitle>
-              <CardDescription>This is what the agent will rely on right now.</CardDescription>
-            </div>
-          </CardHeader>
-          <CardContent className="space-y-3 text-sm">
-            <StrategyPreviewRow label="Offer" value={onboarding.product_name || 'Not set yet'} />
-            <StrategyPreviewRow
-              label="ICP"
-              value={onboarding.target_customer || 'Target customer is still blank.'}
-            />
-            <StrategyPreviewRow
-              label="Pain points"
-              value={onboarding.pain_points || 'Pain points are still blank.'}
-            />
-            <StrategyPreviewRow
-              label="CTA"
-              value={onboarding.call_to_action || 'CTA is still blank.'}
-            />
-          </CardContent>
-        </Card>
+                {visibleStep === 1 && (
+                  <>
+                    <ObField label="Value proposition" hint="How you win versus the status quo">
+                      <textarea
+                        className="ob-textarea"
+                        placeholder="We replace founder-led outbound with fully pre-rendered campaigns."
+                        value={onboarding.value_proposition}
+                        onChange={(e) => onTextChange('value_proposition', e.target.value)}
+                      />
+                    </ObField>
+                    <ObField label="Pain points" hint="What urgency appears in email one">
+                      <textarea
+                        className="ob-textarea"
+                        placeholder="Outbound depends on the founder, reply handling is manual."
+                        value={onboarding.pain_points}
+                        onChange={(e) => onTextChange('pain_points', e.target.value)}
+                      />
+                    </ObField>
+                    <ObField label="Voice guidelines" hint="How the writing should sound">
+                      <input
+                        className="ob-input"
+                        placeholder="Direct, specific, founder-level, and never robotic."
+                        value={onboarding.voice_guidelines}
+                        onChange={(e) => onTextChange('voice_guidelines', e.target.value)}
+                      />
+                    </ObField>
+                  </>
+                )}
+
+                {visibleStep === 2 && (
+                  <>
+                    <ObField label="Target customer" hint="Your highest-conviction ICP right now">
+                      <textarea
+                        className="ob-textarea"
+                        placeholder="B2B SaaS founders or first sales hires at pre-seed to Series A companies."
+                        value={onboarding.target_customer}
+                        onChange={(e) => onTextChange('target_customer', e.target.value)}
+                      />
+                    </ObField>
+                    <div className="ob-field-grid">
+                      <ObField label="Industries" hint="Comma-separated">
+                        <input
+                          className="ob-input"
+                          placeholder="B2B SaaS, devtools"
+                          value={listToCsv(onboarding.industries)}
+                          onChange={(e) => onListChange('industries', e.target.value)}
+                        />
+                      </ObField>
+                      <ObField label="Job titles" hint="Comma-separated">
+                        <input
+                          className="ob-input"
+                          placeholder="Founder, CEO, VP Sales"
+                          value={listToCsv(onboarding.titles)}
+                          onChange={(e) => onListChange('titles', e.target.value)}
+                        />
+                      </ObField>
+                      <ObField label="Company sizes" hint="Comma-separated">
+                        <input
+                          className="ob-input"
+                          placeholder="2-30, 31-100"
+                          value={listToCsv(onboarding.company_sizes)}
+                          onChange={(e) => onListChange('company_sizes', e.target.value)}
+                        />
+                      </ObField>
+                      <ObField label="Geographies" hint="Comma-separated">
+                        <input
+                          className="ob-input"
+                          placeholder="United States, Canada"
+                          value={listToCsv(onboarding.geos)}
+                          onChange={(e) => onListChange('geos', e.target.value)}
+                        />
+                      </ObField>
+                    </div>
+                    <ObField label="Exclusions" hint="Who should never be contacted">
+                      <input
+                        className="ob-input"
+                        placeholder="Agencies, enterprise-only teams"
+                        value={listToCsv(onboarding.exclusions)}
+                        onChange={(e) => onListChange('exclusions', e.target.value)}
+                      />
+                    </ObField>
+                  </>
+                )}
+              </div>
+
+              {/* Navigation */}
+              <div className="ob-nav">
+                <button
+                  type="button"
+                  className="ob-btn-ghost"
+                  disabled={step === 0}
+                  onClick={handleBack}
+                >
+                  <ArrowLeft style={{ width: 14, height: 14 }} />
+                  Back
+                </button>
+
+                <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+                  {onboardingDirty && !saving && (
+                    <button
+                      type="button"
+                      className="ob-btn-ghost"
+                      onClick={() => void onSave()}
+                    >
+                      Save draft
+                    </button>
+                  )}
+
+                  {isLast ? (
+                    <button
+                      type="button"
+                      className={`ob-btn-primary ob-btn-finish${canFinish ? '' : ' blocked'}`}
+                      disabled={saving}
+                      onClick={() => void handleFinish()}
+                    >
+                      {saving ? (
+                        'Saving…'
+                      ) : canFinish ? (
+                        <>
+                          <Check style={{ width: 14, height: 14 }} />
+                          Done — connect tools
+                        </>
+                      ) : (
+                        <>Fill {60 - completion}% more to continue</>
+                      )}
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      className="ob-btn-primary"
+                      onClick={handleNext}
+                    >
+                      Continue
+                      <ArrowRight style={{ width: 14, height: 14 }} />
+                    </button>
+                  )}
+                </div>
+              </div>
+            </StepSlide>
+          </div>
+        </div>
       </div>
     </div>
   )
 }
 
-function Field({
+function StepSlide({
+  isAnimating,
+  animDir,
+  currentStep,
+  visibleStep,
+  children,
+}: {
+  isAnimating: boolean
+  animDir: 'forward' | 'back'
+  currentStep: number
+  visibleStep: number
+  children: ReactNode
+}) {
+  const isExiting = isAnimating && currentStep !== visibleStep
+  const isEntering = isAnimating && currentStep === visibleStep
+
+  let className = 'ob-slide visible'
+  if (isExiting) {
+    className = `ob-slide ${animDir === 'forward' ? 'exiting-forward' : 'exiting-back'}`
+  } else if (isEntering) {
+    className = `ob-slide ${animDir === 'forward' ? 'entering-forward' : 'entering-back'}`
+  }
+
+  return <div className={className}>{children}</div>
+}
+
+function ObField({
   children,
   hint,
   label,
@@ -287,74 +751,12 @@ function Field({
   label: string
 }) {
   return (
-    <div className="space-y-1.5">
+    <div className="ob-field">
       <div>
-        <p className="text-sm font-medium">{label}</p>
-        <p className="text-xs text-muted-foreground">{hint}</p>
+        <p className="ob-field-label">{label}</p>
+        <p className="ob-field-hint">{hint}</p>
       </div>
       {children}
-    </div>
-  )
-}
-
-function ReadinessRow({
-  label,
-  tone,
-  value,
-}: {
-  label: string
-  tone: 'default' | 'warning' | 'success'
-  value: string
-}) {
-  return (
-    <div className="flex items-center justify-between rounded-xl border border-border bg-secondary/30 px-4 py-3">
-      <span className="text-sm text-muted-foreground">{label}</span>
-      <Badge variant={tone === 'warning' ? 'warning' : tone === 'success' ? 'success' : 'outline'}>
-        {value}
-      </Badge>
-    </div>
-  )
-}
-
-function ChecklistRow({
-  description,
-  done,
-  title,
-}: {
-  description: string
-  done: boolean
-  title: string
-}) {
-  return (
-    <div className="flex gap-3 rounded-xl border border-border p-3">
-      <div
-        className={`mt-0.5 flex h-6 w-6 items-center justify-center rounded-full ${
-          done ? 'bg-emerald-50 text-emerald-700' : 'bg-secondary text-muted-foreground'
-        }`}
-      >
-        <CheckCircle2 className="h-4 w-4" />
-      </div>
-      <div>
-        <p className="text-sm font-medium">{title}</p>
-        <p className="text-sm text-muted-foreground">{description}</p>
-      </div>
-    </div>
-  )
-}
-
-function StrategyPreviewRow({
-  label,
-  value,
-}: {
-  label: string
-  value: string
-}) {
-  return (
-    <div className="rounded-xl border border-border bg-secondary/30 p-3">
-      <p className="mb-1 text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground">
-        {label}
-      </p>
-      <p className="text-sm text-foreground">{value}</p>
     </div>
   )
 }

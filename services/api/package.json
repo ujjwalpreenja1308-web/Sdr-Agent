@@ -14,17 +14,23 @@
   "dependencies": {
     "@composio/core": "^0.5.4",
     "@hono/node-server": "^1.14.4",
+    "@llamaindex/openai": "^0.4.22",
+    "@llamaindex/supabase": "^0.1.23",
     "@pipeiq/shared": "*",
     "@supabase/supabase-js": "^2.57.4",
     "@trigger.dev/sdk": "^4.4.3",
     "dotenv": "^17.2.3",
     "hono": "^4.10.5",
+    "imapflow": "^1.2.14",
     "jose": "^6.1.1",
+    "llamaindex": "^0.12.1",
+    "nodemailer": "^8.0.2",
     "openai": "^6.6.0"
   },
   "devDependencies": {
     "@trigger.dev/build": "^4.4.3",
     "@types/node": "^24.5.2",
+    "@types/nodemailer": "^7.0.11",
     "trigger.dev": "^4.4.3",
     "tsx": "^4.20.5",
     "typescript": "^5.9.2"

@@ -195,7 +195,7 @@ export async function getAgentRunState(runId: string): Promise<AgentRunState> {
   return {
     run_id: run.id,
     task_id: run.taskIdentifier,
-    workspace_id: output?.workspace_id ?? payload.workspaceId ?? 'default',
+    workspace_id: output?.workspace_id ?? payload.workspaceId ?? '',
     selected_agent_id: output?.selected_agent_id ?? agent.id,
     selected_agent_label: output?.selected_agent_label ?? agent.label,
     status: mapRunStatus(run.status),

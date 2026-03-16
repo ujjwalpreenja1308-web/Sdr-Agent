@@ -11,10 +11,10 @@ type ApprovalCardProps = {
 
 export function ApprovalCard({ approval, busy, onDecision }: ApprovalCardProps) {
   return (
-    <Card className="h-full">
-      <CardHeader className="pb-4">
+    <Card>
+      <CardHeader>
         <div>
-          <Badge variant={approval.priority === 'high' ? 'warning' : 'outline'} className="mb-2">
+          <Badge variant={approval.priority === 'high' ? 'warning' : 'outline'} className="mb-1.5">
             {approval.type.replace('_', ' ')}
           </Badge>
           <CardTitle>{approval.title}</CardTitle>
@@ -32,36 +32,38 @@ export function ApprovalCard({ approval, busy, onDecision }: ApprovalCardProps) 
           {approval.status}
         </Badge>
       </CardHeader>
-      <CardContent className="flex h-[calc(100%-92px)] flex-col gap-4">
-        <div className="grid gap-3">
+      <CardContent className="flex flex-col gap-3 pt-0">
+        <div className="grid gap-2">
           {approval.samples.slice(0, 2).map((sample) => (
-            <div key={sample.contact_id} className="rounded-xl border border-border bg-secondary/60 p-3">
-              <div className="mb-1 flex items-center justify-between gap-3">
-                <strong className="text-sm">{sample.contact_name}</strong>
-                <span className="text-xs text-muted-foreground">{sample.company}</span>
+            <div key={sample.contact_id} className="rounded-lg border border-border bg-secondary/40 p-3">
+              <div className="mb-1.5 flex items-center justify-between gap-2">
+                <strong className="text-xs font-semibold">{sample.contact_name}</strong>
+                <span className="text-[11px] text-muted-foreground">{sample.company}</span>
               </div>
-              <p className="mb-1 text-sm font-medium">{sample.subject}</p>
-              <p className="line-clamp-3 text-sm text-muted-foreground">{sample.body}</p>
+              <p className="mb-0.5 text-xs font-medium">{sample.subject}</p>
+              <p className="line-clamp-3 text-xs text-muted-foreground">{sample.body}</p>
             </div>
           ))}
         </div>
-        <div className="mt-auto flex gap-2">
+        <div className="flex gap-2">
           <Button
             className="flex-1"
+            size="sm"
             variant="outline"
             disabled={busy}
             onClick={() => onDecision(approval.id, 'rejected')}
             type="button"
           >
-            {busy ? 'Working...' : 'Request revision'}
+            {busy ? 'Working…' : 'Revise'}
           </Button>
           <Button
             className="flex-1"
+            size="sm"
             disabled={busy}
             onClick={() => onDecision(approval.id, 'approved')}
             type="button"
           >
-            {busy ? 'Working...' : 'Approve'}
+            {busy ? 'Working…' : 'Approve'}
           </Button>
         </div>
       </CardContent>

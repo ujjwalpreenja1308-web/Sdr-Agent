@@ -8,10 +8,14 @@ import type {
 } from '@pipeiq/shared'
 
 import { searchApolloProspects } from '../lib/apollo.js'
+import { createGoogleCalendarEvent } from '../lib/calendar.js'
+import { logWorkspaceEvent } from '../lib/activity.js'
 import { env } from '../lib/env.js'
+import { beginExecution, executionKey, finishExecution } from '../lib/execution-runs.js'
 import { addInstantlyLeadsBulk, getInstantlyCampaignSendingStatus } from '../lib/instantly.js'
 import { getOpenAiClient } from '../lib/openai.js'
 import { getRuntimeStore } from '../lib/runtime-store.js'
+import { findWorkspaceOrgId, listConnectedWorkspaceScopes } from '../lib/supabase.js'
 
 type WorkspaceScopedPayload = {
   workspaceId: string
@@ -25,6 +29,8 @@ type PersonalizationPayload = WorkspaceScopedPayload & {
 type ProcessInstantlyReplyPayload = {
   workspaceId: string
   event: InstantlyWebhookEvent
+  executionRunId: string
+  dedupeKey: string
 }
 
 type SendEmailBatchPayload = WorkspaceScopedPayload & {
@@ -235,6 +241,12 @@ function toReplyQueueItem(
     id: event.email_id ?? `reply_${Date.now()}`,
     workspace_id: workspaceId,
     contact_id: contact?.id ?? `contact_unknown_${Date.now()}`,
+    recipient_email: contact?.email ?? email,
+    thread_id:
+      (typeof event.gmail_thread_id === 'string' && event.gmail_thread_id) ||
+      (typeof event.thread_id === 'string' && event.thread_id) ||
+      event.email_id ||
+      null,
     contact_name: contact?.full_name ?? email.split('@')[0] ?? 'Unknown contact',
     company: contact?.company ?? 'Unknown company',
     classification,
@@ -247,6 +259,30 @@ function toReplyQueueItem(
   }
 }
 
+function possibleMeetingStart(event: InstantlyWebhookEvent): string | null {
+  const candidates = [
+    event.scheduled_at,
+    event.start_time,
+    event.meeting_start,
+    event.meeting_time,
+    event.booked_at,
+    event.calendar_start,
+    event.timestamp,
+  ]
+
+  for (const candidate of candidates) {
+    if (typeof candidate !== 'string' || candidate.trim().length === 0) {
+      continue
+    }
+    const parsed = Date.parse(candidate)
+    if (!Number.isNaN(parsed)) {
+      return new Date(parsed).toISOString()
+    }
+  }
+
+  return null
+}
+
 export const weeklyProspectRun = schedules.task({
   id: 'weekly-prospect-run',
   cron: {
@@ -254,48 +290,66 @@ export const weeklyProspectRun = schedules.task({
     timezone: 'Asia/Calcutta',
   },
   run: async () => {
-    const workspaceId = 'default'
-    const orgId = 'dev-org'
+    const scopes = await listConnectedWorkspaceScopes('apollo')
     const store = getRuntimeStore()
+    const runs: Array<{ workspaceId: string; sourcedCount: number; personalizationRunId: string }> = []
 
-    if (!connected(workspaceId, 'apollo')) {
-      logger.warn('Weekly prospect run blocked because Apollo is not connected.', {
-        workspaceId,
-      })
-      return {
-        workspaceId,
-        executed: false,
-        summary: 'Apollo is not connected.',
+    for (const scope of scopes) {
+      await store.hydrateWorkspace(scope.workspaceId, scope.orgId)
+      if (!connected(scope.workspaceId, 'apollo')) {
+        continue
       }
+
+      const prospects = await searchApolloProspects({
+        workspaceId: scope.workspaceId,
+        orgId: scope.orgId,
+        onboarding: store.getOnboarding(scope.workspaceId),
+        limit: 500,
+      })
+      store.applyProspectSearch(
+        scope.workspaceId,
+        prospects,
+        'live',
+        `Weekly scheduled Apollo run sourced ${prospects.length} prospects.`,
+      )
+      store.verifyProspects(scope.workspaceId)
+      await store.persistWorkspace(scope.workspaceId, scope.orgId)
+      await logWorkspaceEvent({
+        workspaceId: scope.workspaceId,
+        action: 'job.weekly_prospect_run.completed',
+        entityType: 'job',
+        entityId: 'weekly-prospect-run',
+        actorType: 'agent',
+        actorId: 'prospector',
+        summary: `Weekly prospect run sourced ${prospects.length} prospects.`,
+        metadata: {
+          sourced_count: prospects.length,
+        },
+      })
+
+      const personalizationRun = await tasks.trigger<typeof personalizationRunTask>(
+        'personalization-run',
+        {
+          workspaceId: scope.workspaceId,
+          orgId: scope.orgId,
+        },
+      )
+
+      runs.push({
+        workspaceId: scope.workspaceId,
+        sourcedCount: prospects.length,
+        personalizationRunId: personalizationRun.id,
+      })
     }
 
-    const prospects = await searchApolloProspects({
-      workspaceId,
-      orgId,
-      onboarding: store.getOnboarding(workspaceId),
-      limit: 500,
+    logger.info('Weekly prospect run completed', {
+      workspaceCount: runs.length,
     })
-    store.applyProspectSearch(
-      workspaceId,
-      prospects,
-      'live',
-      `Weekly scheduled Apollo run sourced ${prospects.length} prospects.`,
-    )
-    store.verifyProspects(workspaceId)
-
-    const personalizationRun = await tasks.trigger<typeof personalizationRunTask>(
-      'personalization-run',
-      {
-        workspaceId,
-        orgId,
-      },
-    )
 
     return {
-      workspaceId,
       executed: true,
-      sourcedCount: prospects.length,
-      personalizationRunId: personalizationRun.id,
+      workspaceCount: runs.length,
+      runs,
     }
   },
 })
@@ -304,6 +358,7 @@ export const personalizationRunTask = task({
   id: 'personalization-run',
   run: async (payload: PersonalizationPayload) => {
     const store = getRuntimeStore()
+    await store.hydrateWorkspace(payload.workspaceId, payload.orgId)
     const contacts = store
       .listContacts(payload.workspaceId)
       .filter((contact) =>
@@ -334,6 +389,19 @@ export const personalizationRunTask = task({
     }
 
     store.saveEmailDrafts(payload.workspaceId, drafts)
+    await store.persistWorkspace(payload.workspaceId, payload.orgId)
+    await logWorkspaceEvent({
+      workspaceId: payload.workspaceId,
+      action: 'job.personalization_run.completed',
+      entityType: 'job',
+      entityId: 'personalization-run',
+      actorType: 'agent',
+      actorId: 'copywriter',
+      summary: `Generated ${drafts.length} personalized email sequences.`,
+      metadata: {
+        draft_count: drafts.length,
+      },
+    })
     logger.info('Saved personalization drafts', {
       workspaceId: payload.workspaceId,
       draftCount: drafts.length,
@@ -350,27 +418,161 @@ export const personalizationRunTask = task({
 export const processInstantlyReplyTask = task({
   id: 'process-instantly-reply',
   run: async (payload: ProcessInstantlyReplyPayload) => {
-    const replyText =
-      payload.event.reply_text ??
-      payload.event.reply_text_snippet ??
-      payload.event.email_text ??
-      ''
-    const classification = await classifyReply(replyText)
-    const reply = toReplyQueueItem(payload.workspaceId, payload.event, classification)
-    const store = getRuntimeStore()
-    store.addProcessedReply(payload.workspaceId, reply, true)
+    if (payload.event.event_type === 'lead_meeting_booked') {
+      const store = getRuntimeStore()
+      const orgId = await findWorkspaceOrgId(payload.workspaceId)
+      if (!orgId) {
+        throw new Error(`Could not resolve org for workspace ${payload.workspaceId}.`)
+      }
+      await store.hydrateWorkspace(payload.workspaceId, orgId)
+      const email = payload.event.lead_email ?? 'unknown@example.com'
+      const contact =
+        store.listContacts(payload.workspaceId).find(
+          (item) => item.email.toLowerCase() === email.toLowerCase(),
+        ) ?? null
+      const scheduledFor =
+        possibleMeetingStart(payload.event) ??
+        new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString()
 
-    logger.info('Processed Instantly reply', {
-      workspaceId: payload.workspaceId,
-      replyId: reply.id,
-      classification,
-    })
+      let calendarEventId: string | null = null
+      const calendarConnected = connected(payload.workspaceId, 'googlecalendar')
+      if (calendarConnected && contact?.email) {
+        try {
+          const end = new Date(new Date(scheduledFor).getTime() + 30 * 60 * 1000).toISOString()
+          const calendarEvent = await createGoogleCalendarEvent({
+            workspaceId: payload.workspaceId,
+            orgId,
+            summary: `PipeIQ intro with ${contact.full_name}`,
+            description: 'Booked from the outbound reply workflow.',
+            attendeeEmail: contact.email,
+            startDatetime: scheduledFor,
+            endDatetime: end,
+            timezone: 'UTC',
+          })
+          calendarEventId = calendarEvent.id
+        } catch (error) {
+          logger.warn('Google Calendar event creation failed for booked meeting.', {
+            workspaceId: payload.workspaceId,
+            error: error instanceof Error ? error.message : 'unknown',
+          })
+        }
+      }
 
-    return {
-      workspaceId: payload.workspaceId,
-      replyId: reply.id,
-      classification,
-      executed: true,
+      const meeting = store.upsertMeetingHandoff(payload.workspaceId, {
+        id: `meeting_${contact?.id ?? payload.event.email_id ?? Date.now()}`,
+        workspace_id: payload.workspaceId,
+        contact_id: contact?.id ?? `contact_unknown_${Date.now()}`,
+        contact_name: contact?.full_name ?? email.split('@')[0] ?? 'Unknown contact',
+        company: contact?.company ?? 'Unknown company',
+        scheduled_for: scheduledFor,
+        status: 'booked',
+        calendar_event_id: calendarEventId,
+        prep_brief: [
+          'Meeting was marked as booked from the outbound workflow.',
+          'Review previous reply context before the call.',
+        ],
+        owner_note: calendarEventId
+          ? 'Google Calendar event was created for this booked meeting.'
+          : 'Meeting was booked, but no Google Calendar event id was created.',
+      })
+      await store.persistWorkspace(payload.workspaceId, orgId)
+      await finishExecution({
+        workspaceId: payload.workspaceId,
+        scope: 'webhook.instantly.process',
+        runId: payload.executionRunId,
+        executionKey: payload.dedupeKey,
+        actorType: 'system',
+        status: 'completed',
+        summary: 'Processed a booked-meeting webhook event.',
+        metadata: {
+          meeting_id: meeting.id,
+          calendar_event_id: calendarEventId,
+        },
+      })
+      await logWorkspaceEvent({
+        workspaceId: payload.workspaceId,
+        action: 'job.process_instantly_reply.meeting_booked',
+        entityType: 'meeting',
+        entityId: meeting.id,
+        actorType: 'agent',
+        actorId: 'meetings',
+        summary: 'Converted the booked-meeting webhook into a meeting record.',
+        metadata: {
+          calendar_event_id: calendarEventId,
+        },
+      })
+      return {
+        workspaceId: payload.workspaceId,
+        meetingId: meeting.id,
+        executed: true,
+      }
+    }
+
+    try {
+      const replyText =
+        payload.event.reply_text ??
+        payload.event.reply_text_snippet ??
+        payload.event.email_text ??
+        ''
+      const classification = await classifyReply(replyText)
+      const reply = toReplyQueueItem(payload.workspaceId, payload.event, classification)
+      const store = getRuntimeStore()
+      const orgId = await findWorkspaceOrgId(payload.workspaceId)
+      if (!orgId) {
+        throw new Error(`Could not resolve org for workspace ${payload.workspaceId}.`)
+      }
+      await store.hydrateWorkspace(payload.workspaceId, orgId)
+      store.addProcessedReply(payload.workspaceId, reply, true)
+      await store.persistWorkspace(payload.workspaceId, orgId)
+      await finishExecution({
+        workspaceId: payload.workspaceId,
+        scope: 'webhook.instantly.process',
+        runId: payload.executionRunId,
+        executionKey: payload.dedupeKey,
+        actorType: 'system',
+        status: 'completed',
+        summary: `Processed Instantly reply classified as ${classification}.`,
+        metadata: {
+          classification,
+        },
+      })
+      await logWorkspaceEvent({
+        workspaceId: payload.workspaceId,
+        action: 'job.process_instantly_reply.completed',
+        entityType: 'reply',
+        entityId: reply.id,
+        actorType: 'agent',
+        actorId: 'reply',
+        summary: `Processed an Instantly reply classified as ${classification}.`,
+        metadata: {
+          classification,
+        },
+      })
+
+      logger.info('Processed Instantly reply', {
+        workspaceId: payload.workspaceId,
+        replyId: reply.id,
+        classification,
+      })
+
+      return {
+        workspaceId: payload.workspaceId,
+        replyId: reply.id,
+        classification,
+        executed: true,
+      }
+    } catch (error) {
+      await finishExecution({
+        workspaceId: payload.workspaceId,
+        scope: 'webhook.instantly.process',
+        runId: payload.executionRunId,
+        executionKey: payload.dedupeKey,
+        actorType: 'system',
+        status: 'failed',
+        summary: error instanceof Error ? error.message : 'Instantly reply processing failed.',
+        metadata: {},
+      })
+      throw error
     }
   },
 })
@@ -379,6 +581,7 @@ export const sendEmailBatchTask = task({
   id: 'send-email-batch',
   run: async (payload: SendEmailBatchPayload) => {
     const store = getRuntimeStore()
+    await store.hydrateWorkspace(payload.workspaceId, payload.orgId)
     const leads = store
       .getPipeline(payload.workspaceId)
       .contacts.filter((contact) => contact.status === 'approved_to_launch')
@@ -401,37 +604,108 @@ export const sendEmailBatchTask = task({
       }
     }
 
-    const importResult = await addInstantlyLeadsBulk({
-      workspaceId: payload.workspaceId,
-      orgId: payload.orgId,
-      campaignId: payload.campaignId,
-      leads,
-    })
-    const diagnostics = await getInstantlyCampaignSendingStatus({
-      workspaceId: payload.workspaceId,
-      orgId: payload.orgId,
-      campaignId: payload.campaignId,
-    })
-    const launchResult = store.recordInstantlyLaunch(
-      payload.workspaceId,
+    const runKey = executionKey([
       payload.campaignId,
-      importResult.importedCount,
-      importResult.summary,
-    )
-
-    const waitpoint = await wait.createToken({
-      idempotencyKey: `campaign-monitor-${payload.workspaceId}-${payload.campaignId}`,
-      timeout: '7d',
-      tags: [`workspace:${payload.workspaceId}`, `campaign:${payload.campaignId}`],
-    })
-
-    return {
+      leads.map((lead) => lead.email),
+    ])
+    const execution = await beginExecution({
       workspaceId: payload.workspaceId,
-      executed: true,
-      contactsLaunched: launchResult.contacts_launched,
-      diagnostics: diagnostics.summary,
-      waitpointId: waitpoint.id,
-      waitpointUrl: waitpoint.url,
+      scope: 'launch.send_batch',
+      executionKey: runKey,
+      actorType: 'agent',
+      actorId: 'launcher',
+      summary: `Starting Instantly lead import for campaign ${payload.campaignId}.`,
+      dedupeWindowMs: 60 * 60 * 1000,
+    })
+    if (execution.kind !== 'started') {
+      const current = store.currentLaunchResult(
+        payload.workspaceId,
+        'Skipped duplicate Instantly lead import for the same campaign and approved batch.',
+      )
+      return {
+        workspaceId: payload.workspaceId,
+        executed: false,
+        contactsLaunched: current.contacts_launched,
+        diagnostics: current.message,
+      }
+    }
+
+    try {
+      const importResult = await addInstantlyLeadsBulk({
+        workspaceId: payload.workspaceId,
+        orgId: payload.orgId,
+        campaignId: payload.campaignId,
+        leads,
+      })
+      const diagnostics = await getInstantlyCampaignSendingStatus({
+        workspaceId: payload.workspaceId,
+        orgId: payload.orgId,
+        campaignId: payload.campaignId,
+      })
+      const launchResult = store.recordInstantlyLaunch(
+        payload.workspaceId,
+        payload.campaignId,
+        importResult.importedCount,
+        importResult.summary,
+      )
+      await store.persistWorkspace(payload.workspaceId, payload.orgId)
+      await finishExecution({
+        workspaceId: payload.workspaceId,
+        scope: 'launch.send_batch',
+        runId: execution.runId,
+        executionKey: runKey,
+        actorType: 'agent',
+        actorId: 'launcher',
+        status: 'completed',
+        summary: importResult.summary,
+        metadata: {
+          contacts_launched: launchResult.contacts_launched,
+          campaign_id: payload.campaignId,
+        },
+      })
+      await logWorkspaceEvent({
+        workspaceId: payload.workspaceId,
+        action: 'job.send_email_batch.completed',
+        entityType: 'campaign',
+        entityId: payload.campaignId,
+        actorType: 'agent',
+        actorId: 'launcher',
+        summary: importResult.summary,
+        metadata: {
+          contacts_launched: launchResult.contacts_launched,
+          diagnostics: diagnostics.summary,
+        },
+      })
+
+      const waitpoint = await wait.createToken({
+        idempotencyKey: `campaign-monitor-${payload.workspaceId}-${payload.campaignId}`,
+        timeout: '7d',
+        tags: [`workspace:${payload.workspaceId}`, `campaign:${payload.campaignId}`],
+      })
+
+      return {
+        workspaceId: payload.workspaceId,
+        executed: true,
+        contactsLaunched: launchResult.contacts_launched,
+        diagnostics: diagnostics.summary,
+        waitpointId: waitpoint.id,
+        waitpointUrl: waitpoint.url,
+      }
+    } catch (error) {
+      await finishExecution({
+        workspaceId: payload.workspaceId,
+        scope: 'launch.send_batch',
+        runId: execution.runId,
+        executionKey: runKey,
+        actorType: 'agent',
+        actorId: 'launcher',
+        status: 'failed',
+        summary: error instanceof Error ? error.message : 'Instantly lead import failed.',
+        metadata: {
+          campaign_id: payload.campaignId,
+        },
+      })
+      throw error
     }
   },
 })
@@ -446,6 +720,7 @@ export const reengageContactTask = task({
     })
 
     const store = getRuntimeStore()
+    await store.hydrateWorkspace(payload.workspaceId, payload.orgId)
     const contact = store
       .listContacts(payload.workspaceId)
       .find((item) => item.id === payload.contactId)
@@ -463,6 +738,19 @@ export const reengageContactTask = task({
       subject,
       body,
     )
+    await store.persistWorkspace(payload.workspaceId, payload.orgId)
+    await logWorkspaceEvent({
+      workspaceId: payload.workspaceId,
+      action: 'job.reengage_contact.completed',
+      entityType: 'approval_queue',
+      entityId: approval.id,
+      actorType: 'agent',
+      actorId: 'reply',
+      summary: 'Created a re-engagement draft for a deferred contact.',
+      metadata: {
+        contact_id: payload.contactId,
+      },
+    })
 
     return {
       workspaceId: payload.workspaceId,

@@ -7,8 +7,10 @@ import type {
 } from '@pipeiq/shared'
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions'
 
+import { buildAdaptiveContext } from '../lib/adaptive.js'
 import { env } from '../lib/env.js'
 import { getOpenAiClient } from '../lib/openai.js'
+import { queryKnowledge } from '../lib/rag.js'
 import { agentDefinition, agentRegistry } from './registry.js'
 import { getWorkspaceContext, workspaceContextText } from './workspace-context.js'
 
@@ -231,19 +233,41 @@ export function buildAgentPlan(workspaceId: string, prompt?: string, preferredAg
   }
 }
 
-function buildSystemPrompt(workspaceId: string, agentId: AgentId): string {
+async function buildSystemPrompt(workspaceId: string, agentId: AgentId, prompt?: string): Promise<string> {
   const context = getWorkspaceContext(workspaceId)
   const agent = agentDefinition(agentId)
-  return [
+
+  // Fetch RAG + adaptive context in parallel (gracefully degrade to empty if unavailable)
+  const queryText = prompt ?? agent.focus
+  const [playbookChunks, companyChunks, adaptiveCtx] = await Promise.all([
+    queryKnowledge(workspaceId, 'playbooks', queryText, 3).catch(() => [] as string[]),
+    queryKnowledge(workspaceId, 'company', queryText, 3).catch(() => [] as string[]),
+    buildAdaptiveContext(workspaceId).catch(() => ''),
+  ])
+
+  const parts: string[] = [
     ...agent.systemInstructions,
     'Respond in plain language with short paragraphs and crisp action lists when useful.',
     'Ground every recommendation in the current workspace state.',
     'If something is blocked, say exactly why and what should happen next.',
     'Do not invent completed tool actions, launches, sends, or replies.',
-    '',
-    'Workspace state:',
-    workspaceContextText(context),
-  ].join('\n')
+  ]
+
+  if (playbookChunks.length > 0) {
+    parts.push('', 'Relevant sales playbook guidance:', ...playbookChunks.map((c) => `- ${c}`))
+  }
+
+  if (companyChunks.length > 0) {
+    parts.push('', 'Company background context:', ...companyChunks.map((c) => `- ${c}`))
+  }
+
+  if (adaptiveCtx.length > 0) {
+    parts.push('', adaptiveCtx)
+  }
+
+  parts.push('', 'Workspace state:', workspaceContextText(context))
+
+  return parts.join('\n')
 }
 
 export async function runAgentChat(params: {
@@ -259,12 +283,13 @@ export async function runAgentChat(params: {
   const agentId = selectAgent(params.workspaceId, params.prompt, params.preferredAgentId)
   const agent = agentDefinition(agentId)
   const openai = getOpenAiClient()
+  const systemPrompt = await buildSystemPrompt(params.workspaceId, agentId, params.prompt)
   const response = await openai.chat.completions.create({
     model: env.openAiModel,
     messages: [
       {
         role: 'system',
-        content: buildSystemPrompt(params.workspaceId, agentId),
+        content: systemPrompt,
       },
       ...params.history,
       {
@@ -299,13 +324,14 @@ export async function createAgentStream(params: {
   const agentId = selectAgent(params.workspaceId, params.prompt, params.preferredAgentId)
   const agent = agentDefinition(agentId)
   const openai = getOpenAiClient()
+  const systemPrompt = await buildSystemPrompt(params.workspaceId, agentId, params.prompt)
   const stream = await openai.chat.completions.create({
     model: env.openAiModel,
     stream: true,
     messages: [
       {
         role: 'system',
-        content: buildSystemPrompt(params.workspaceId, agentId),
+        content: systemPrompt,
       },
       ...params.history,
       {

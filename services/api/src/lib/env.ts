@@ -26,6 +26,10 @@ type EnvKey =
   | 'PIPEIQ_GOOGLECALENDAR_AUTH_CONFIG_ID'
   | 'PIPEIQ_CALENDLY_AUTH_CONFIG_ID'
   | 'PIPEIQ_HUBSPOT_AUTH_CONFIG_ID'
+  | 'PIPEIQ_DEV_BEARER_TOKEN'
+  | 'PIPEIQ_DEV_USER_ID'
+  | 'PIPEIQ_DEV_ORG_ID'
+  | 'PIPEIQ_WARMING_CRON_SECRET'
 
 type OptionalEnvKey =
   | 'SUPABASE_URL'
@@ -40,6 +44,10 @@ type OptionalEnvKey =
   | 'PIPEIQ_GOOGLECALENDAR_AUTH_CONFIG_ID'
   | 'PIPEIQ_CALENDLY_AUTH_CONFIG_ID'
   | 'PIPEIQ_HUBSPOT_AUTH_CONFIG_ID'
+  | 'PIPEIQ_DEV_BEARER_TOKEN'
+  | 'PIPEIQ_DEV_USER_ID'
+  | 'PIPEIQ_DEV_ORG_ID'
+  | 'PIPEIQ_WARMING_CRON_SECRET'
 
 const OPTIONAL_KEYS = new Set<OptionalEnvKey>([
   'SUPABASE_URL',
@@ -54,6 +62,10 @@ const OPTIONAL_KEYS = new Set<OptionalEnvKey>([
   'PIPEIQ_GOOGLECALENDAR_AUTH_CONFIG_ID',
   'PIPEIQ_CALENDLY_AUTH_CONFIG_ID',
   'PIPEIQ_HUBSPOT_AUTH_CONFIG_ID',
+  'PIPEIQ_DEV_BEARER_TOKEN',
+  'PIPEIQ_DEV_USER_ID',
+  'PIPEIQ_DEV_ORG_ID',
+  'PIPEIQ_WARMING_CRON_SECRET',
 ])
 
 function getEnvValue(name: EnvKey): string {
@@ -89,6 +101,12 @@ export const env = {
     calendly: getEnvValue('PIPEIQ_CALENDLY_AUTH_CONFIG_ID'),
     hubspot: getEnvValue('PIPEIQ_HUBSPOT_AUTH_CONFIG_ID'),
   },
+  devAuth: {
+    bearerToken: getEnvValue('PIPEIQ_DEV_BEARER_TOKEN') || 'dev-local-token',
+    userId: getEnvValue('PIPEIQ_DEV_USER_ID') || 'local-user',
+    orgId: getEnvValue('PIPEIQ_DEV_ORG_ID') || 'local-org',
+  },
+  warmingCronSecret: getEnvValue('PIPEIQ_WARMING_CRON_SECRET') || 'dev-warming-secret',
 }
 
 export function allowedOrigins(): string[] {

@@ -35,56 +35,48 @@ export function ProspectsPanel({
   )
 
   return (
-    <div className="grid h-full grid-cols-[0.95fr_1.05fr] gap-4 overflow-hidden">
-      <div className="grid h-full grid-rows-[0.88fr_1.12fr] gap-4">
-        <Card className="shadow-none">
+    <div className="grid h-full grid-cols-[1fr_280px] gap-4 overflow-hidden">
+      <div className="flex min-h-0 flex-col gap-4 overflow-y-auto pr-1">
+        {/* Controls */}
+        <Card>
           <CardHeader>
-            <div>
-              <Badge variant="outline" className="mb-2">
-                Apollo + Hunter
-              </Badge>
-              <CardTitle>Source prospects, then verify deliverability</CardTitle>
-              <CardDescription>
-                Prospecting and verification are now separate pre-launch steps before any batch gets
-                personalized.
-              </CardDescription>
-            </div>
+            <CardTitle>Prospect sourcing</CardTitle>
+            <CardDescription>Run Apollo search, then verify deliverability with Hunter.</CardDescription>
             <Badge variant={prospectRun.status === 'completed' ? 'success' : 'warning'}>
               {prospectRun.status}
             </Badge>
           </CardHeader>
-          <CardContent className="space-y-4">
+          <CardContent className="space-y-3 pt-0">
             <div className="grid grid-cols-3 gap-3">
               <MetricTile label="Sourced" value={String(prospectRun.sourced_count)} />
               <MetricTile label="Verified" value={String(verificationCounts.valid + verificationCounts.risky)} />
               <MetricTile label="Invalid" value={String(verificationCounts.invalid)} />
             </div>
 
-            <div className="rounded-xl border border-border bg-secondary/20 p-4">
-              <p className="mb-1 text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground">
-                Run note
-              </p>
-              <p className="text-sm">{prospectRun.note}</p>
+            <div className="rounded-lg border border-border bg-secondary/20 px-3 py-2.5">
+              <p className="mb-0.5 text-[10px] font-medium uppercase tracking-[0.1em] text-muted-foreground">Run note</p>
+              <p className="text-xs">{prospectRun.note}</p>
             </div>
 
             <div className="flex flex-wrap gap-2">
-              <Button disabled={running} onClick={() => void onRun()} type="button">
-                <Search className="mr-2 h-4 w-4" />
-                {running ? 'Running Apollo...' : 'Run prospect search'}
+              <Button size="sm" disabled={running} onClick={() => void onRun()} type="button">
+                <Search className="h-3.5 w-3.5" />
+                {running ? 'Running Apollo…' : 'Run prospect search'}
               </Button>
               {hunterConnection?.status === 'connected' ? (
                 <Button
+                  size="sm"
                   disabled={verifying || pipeline.contacts.length === 0}
                   onClick={() => void onVerify()}
                   type="button"
                   variant="outline"
                 >
-                  <ShieldCheck className="mr-2 h-4 w-4" />
-                  {verifying ? 'Verifying emails...' : 'Verify emails'}
+                  <ShieldCheck className="h-3.5 w-3.5" />
+                  {verifying ? 'Verifying…' : 'Verify emails'}
                 </Button>
               ) : (
-                <Button onClick={() => void onConnectHunter()} type="button" variant="outline">
-                  <Link2 className="mr-2 h-4 w-4" />
+                <Button size="sm" onClick={() => void onConnectHunter()} type="button" variant="outline">
+                  <Link2 className="h-3.5 w-3.5" />
                   Connect Hunter
                 </Button>
               )}
@@ -92,36 +84,37 @@ export function ProspectsPanel({
           </CardContent>
         </Card>
 
-        <Card className="shadow-none">
+        {/* Contact list */}
+        <Card>
           <CardHeader>
-            <div>
-              <CardTitle>Sourced contacts</CardTitle>
-              <CardDescription>Verification badges are the gate before personalization.</CardDescription>
-            </div>
+            <CardTitle>Sourced contacts</CardTitle>
+            <CardDescription>Verification status gates the personalization batch.</CardDescription>
           </CardHeader>
-          <CardContent className="space-y-3">
+          <CardContent className="space-y-2 pt-0">
             {pipeline.contacts.length > 0 ? (
-              pipeline.contacts.slice(0, 5).map((contact) => (
-                <div key={contact.id} className="rounded-xl border border-border bg-secondary/20 p-4">
-                  <div className="mb-2 flex items-start justify-between gap-3">
+              pipeline.contacts.slice(0, 8).map((contact) => (
+                <div key={contact.id} className="rounded-lg border border-border bg-secondary/10 px-3 py-2.5">
+                  <div className="mb-1 flex items-start justify-between gap-2">
                     <div>
-                      <p className="font-medium">{contact.full_name}</p>
-                      <p className="text-sm text-muted-foreground">
-                        {contact.title} at {contact.company}
+                      <p className="text-sm font-medium">{contact.full_name}</p>
+                      <p className="text-xs text-muted-foreground">
+                        {contact.title} · {contact.company}
                       </p>
-                      <p className="text-sm text-muted-foreground">{contact.email}</p>
+                      <p className="text-xs text-muted-foreground">{contact.email}</p>
                     </div>
                     <Badge variant={verificationVariant(contact.email_verification_status)}>
                       {contact.email_verification_status}
                     </Badge>
                   </div>
-                  <p className="text-sm text-muted-foreground">
-                    {contact.email_verification_note || contact.signal_detail}
-                  </p>
+                  {(contact.email_verification_note || contact.signal_detail) ? (
+                    <p className="text-xs text-muted-foreground">
+                      {contact.email_verification_note || contact.signal_detail}
+                    </p>
+                  ) : null}
                 </div>
               ))
             ) : (
-              <div className="rounded-xl border border-dashed border-border bg-secondary/20 p-4 text-sm text-muted-foreground">
+              <div className="rounded-lg border border-dashed border-border bg-secondary/20 p-3 text-xs text-muted-foreground">
                 Run Apollo prospecting to populate the first set of contacts.
               </div>
             )}
@@ -129,30 +122,27 @@ export function ProspectsPanel({
         </Card>
       </div>
 
-      <Card className="shadow-none">
+      {/* Workflow guide */}
+      <Card className="overflow-hidden">
         <CardHeader>
-          <div>
-            <CardTitle>How the verification slice behaves</CardTitle>
-            <CardDescription>
-              Hunter now decides which emails can move into the personalized batch.
-            </CardDescription>
-          </div>
+          <CardTitle>How it works</CardTitle>
+          <CardDescription>Verification gates which contacts get personalized.</CardDescription>
         </CardHeader>
-        <CardContent className="space-y-3">
+        <CardContent className="space-y-2 pt-0">
           <WorkflowRow
             icon={Search}
             title="Search"
-            description="PipeIQ calls Apollo people search and enrichment using the saved ICP filters."
+            description="Apollo people search via Composio using your ICP filters."
           />
           <WorkflowRow
             icon={ShieldCheck}
             title="Verify"
-            description="Hunter runs through Composio and classifies each sourced email as valid, risky, or invalid."
+            description="Hunter classifies each email as valid, risky, or invalid."
           />
           <WorkflowRow
             icon={Orbit}
             title="Hand off"
-            description="Only verified or risky contacts move into the first personalized batch and later launch approvals."
+            description="Valid and risky contacts move into the personalized batch."
           />
         </CardContent>
       </Card>
@@ -162,9 +152,9 @@ export function ProspectsPanel({
 
 function MetricTile({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-xl border border-border bg-secondary/20 p-4">
-      <p className="text-sm text-muted-foreground">{label}</p>
-      <p className="mt-2 text-3xl font-semibold tracking-tight">{value}</p>
+    <div className="rounded-lg border border-border bg-secondary/20 p-3">
+      <p className="text-xs text-muted-foreground">{label}</p>
+      <p className="mt-1.5 text-2xl font-semibold tracking-tight">{value}</p>
     </div>
   )
 }
@@ -179,13 +169,13 @@ function WorkflowRow({
   title: string
 }) {
   return (
-    <div className="flex gap-3 rounded-xl border border-border p-4">
-      <div className="mt-0.5 rounded-lg bg-secondary p-2">
-        <Icon className="h-4 w-4" />
+    <div className="flex gap-2.5 rounded-lg border border-border bg-secondary/10 p-3">
+      <div className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-secondary">
+        <Icon className="h-3.5 w-3.5 text-muted-foreground" />
       </div>
       <div>
-        <p className="font-medium">{title}</p>
-        <p className="text-sm text-muted-foreground">{description}</p>
+        <p className="text-xs font-medium">{title}</p>
+        <p className="text-xs text-muted-foreground mt-0.5">{description}</p>
       </div>
     </div>
   )
