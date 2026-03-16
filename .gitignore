@@ -10,3 +10,4 @@ Thumbs.db
 !.env.example
 apps/web/node_modules/
 apps/web/dist/
+supabase/.temp/
