@@ -10,7 +10,7 @@ import type { ChatCompletionMessageParam } from 'openai/resources/chat/completio
 import { buildAdaptiveContext } from '../lib/adaptive.js'
 import { env } from '../lib/env.js'
 import { getOpenAiClient } from '../lib/openai.js'
-import { queryKnowledge } from '../lib/rag.js'
+import { queryKnowledge, type RankedChunk } from '../lib/rag.js'
 import { agentDefinition, agentRegistry } from './registry.js'
 import { getWorkspaceContext, workspaceContextText } from './workspace-context.js'
 
@@ -233,17 +233,69 @@ export function buildAgentPlan(workspaceId: string, prompt?: string, preferredAg
   }
 }
 
+// ─── RAG context helpers ──────────────────────────────────────────────────────
+
+/**
+ * Build a richer query string for RAG retrieval by combining the user's prompt
+ * with the agent's focus area.  This improves recall for short / ambiguous prompts.
+ */
+function buildRagQuery(prompt: string | undefined, agentFocus: string): string {
+  if (!prompt || prompt.trim().length === 0) return agentFocus
+  // If the prompt is already detailed, use it directly.
+  // Otherwise, blend both for broader coverage.
+  if (prompt.trim().length > 80) return prompt.trim()
+  return `${prompt.trim()} ${agentFocus}`
+}
+
+/**
+ * Deduplicate chunks across pipelines by content (first occurrence wins).
+ * This prevents the same snippet from appearing under both Playbooks and Company.
+ */
+function deduplicateChunks(chunks: RankedChunk[]): RankedChunk[] {
+  const seen = new Set<string>()
+  return chunks.filter((c) => {
+    const key = c.content.slice(0, 120) // fingerprint first 120 chars
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
+}
+
+/**
+ * Format a list of ranked chunks into a numbered block for the system prompt.
+ * Shows the similarity score (as %) so the LLM can weight accordingly.
+ */
+function formatChunkBlock(label: string, chunks: RankedChunk[]): string {
+  if (chunks.length === 0) return ''
+  const lines = chunks.map(
+    (c, i) => `${i + 1}. [${Math.round(c.similarity * 100)}% match${c.source ? ` — ${c.source}` : ''}]\n   ${c.content.replace(/\n/g, '\n   ')}`,
+  )
+  return [`${label}:`, ...lines].join('\n')
+}
+
+// ─── System prompt assembly ───────────────────────────────────────────────────
+
 async function buildSystemPrompt(workspaceId: string, agentId: AgentId, prompt?: string): Promise<string> {
   const context = getWorkspaceContext(workspaceId)
   const agent = agentDefinition(agentId)
 
-  // Fetch RAG + adaptive context in parallel (gracefully degrade to empty if unavailable)
-  const queryText = prompt ?? agent.focus
+  const ragQuery = buildRagQuery(prompt, agent.focus)
+
+  // Fetch RAG + adaptive context in parallel.
+  // Use topK=6 and threshold=0.65 — only genuinely relevant chunks get through.
   const [playbookChunks, companyChunks, adaptiveCtx] = await Promise.all([
-    queryKnowledge(workspaceId, 'playbooks', queryText, 3).catch(() => [] as string[]),
-    queryKnowledge(workspaceId, 'company', queryText, 3).catch(() => [] as string[]),
+    queryKnowledge(workspaceId, 'playbooks', ragQuery, 6, 0.65).catch(() => [] as RankedChunk[]),
+    queryKnowledge(workspaceId, 'company',   ragQuery, 6, 0.65).catch(() => [] as RankedChunk[]),
     buildAdaptiveContext(workspaceId).catch(() => ''),
   ])
+
+  // Merge + deduplicate across both pipelines, then keep best 8 total
+  const mergedPlaybooks = playbookChunks
+  const mergedCompany   = deduplicateChunks(
+    companyChunks.filter(
+      (cc) => !playbookChunks.some((pc) => pc.content.slice(0, 120) === cc.content.slice(0, 120)),
+    ),
+  )
 
   const parts: string[] = [
     ...agent.systemInstructions,
@@ -253,13 +305,11 @@ async function buildSystemPrompt(workspaceId: string, agentId: AgentId, prompt?:
     'Do not invent completed tool actions, launches, sends, or replies.',
   ]
 
-  if (playbookChunks.length > 0) {
-    parts.push('', 'Relevant sales playbook guidance:', ...playbookChunks.map((c) => `- ${c}`))
-  }
+  const playbookBlock = formatChunkBlock('Relevant sales playbook guidance', mergedPlaybooks)
+  if (playbookBlock) parts.push('', playbookBlock)
 
-  if (companyChunks.length > 0) {
-    parts.push('', 'Company background context:', ...companyChunks.map((c) => `- ${c}`))
-  }
+  const companyBlock = formatChunkBlock('Company background context', mergedCompany)
+  if (companyBlock) parts.push('', companyBlock)
 
   if (adaptiveCtx.length > 0) {
     parts.push('', adaptiveCtx)
