@@ -54,8 +54,26 @@ function randomItem<T>(arr: T[]): T {
   return arr[Math.floor(Math.random() * arr.length)]
 }
 
+function shuffled<T>(arr: T[]): T[] {
+  const copy = [...arr]
+  for (let i = copy.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1))
+    ;[copy[i], copy[j]] = [copy[j], copy[i]]
+  }
+  return copy
+}
+
+// ─── Timeout helper ───────────────────────────────────────────────────────────
+
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  const timeout = new Promise<never>((_, reject) =>
+    setTimeout(() => reject(new Error(`Timed out after ${ms}ms: ${label}`)), ms),
+  )
+  return Promise.race([promise, timeout])
+}
+
 // ─── Ramp schedule ────────────────────────────────────────────────────────────
-// Returns how many emails to send today based on how old the inbox is (days since first warm)
+// Returns how many emails to send today based on how old the inbox is (days since creation)
 
 export function computeDailyTarget(daysSinceStart: number, maxTarget: number): number {
   // Week 1: 5/day, Week 2: 10/day, Week 3: 20/day, Week 4+: maxTarget
@@ -77,11 +95,16 @@ function buildTransporter(inbox: WarmingInbox): Transporter {
       pass: decrypt(inbox.smtp_pass_enc),
     },
     tls: { rejectUnauthorized: false },
+    connectionTimeout: 30_000,
+    socketTimeout: 60_000,
+    greetingTimeout: 15_000,
   })
 }
 
 // ─── IMAP engagement ──────────────────────────────────────────────────────────
 // Connects via IMAP, searches for warming emails, marks them read + moves to inbox
+
+const IMAP_TIMEOUT_MS = 45_000
 
 async function engageReceivedEmail(
   inbox: WarmingInbox,
@@ -103,13 +126,17 @@ async function engageReceivedEmail(
   let landedInSpam = false
 
   try {
-    await client.connect()
+    await withTimeout(client.connect(), IMAP_TIMEOUT_MS, `IMAP connect ${inbox.email}`)
 
     // Check spam folder first
     const spamFolders = ['[Gmail]/Spam', 'Junk', 'Spam', 'Junk Email', 'Bulk Mail']
     for (const folder of spamFolders) {
       try {
-        const lock = await client.getMailboxLock(folder)
+        const lock = await withTimeout(
+          client.getMailboxLock(folder),
+          IMAP_TIMEOUT_MS,
+          `IMAP lock ${folder}`,
+        )
         try {
           const messages = client.fetch({ header: { 'message-id': messageId } }, {
             flags: true,
@@ -132,7 +159,11 @@ async function engageReceivedEmail(
 
     // If not in spam, find in inbox and mark as important
     if (!landedInSpam) {
-      const lock = await client.getMailboxLock('INBOX')
+      const lock = await withTimeout(
+        client.getMailboxLock('INBOX'),
+        IMAP_TIMEOUT_MS,
+        `IMAP lock INBOX`,
+      )
       try {
         const messages = client.fetch({ header: { 'message-id': messageId } }, {
           flags: true,
@@ -155,35 +186,41 @@ async function engageReceivedEmail(
   return { movedToInbox, landedInSpam }
 }
 
-// ─── Send one warming email ───────────────────────────────────────────────────
+// ─── Send one warming email (with 1 retry on transient failure) ───────────────
 
 async function sendWarmingEmail(
   sender: WarmingInbox,
   recipient: WarmingInbox,
 ): Promise<{ messageId: string; subject: string } | null> {
-  const transporter = buildTransporter(sender)
-
   const subject = randomItem(WARMING_SUBJECTS)
   const body = randomItem(WARMING_BODIES)
   const fromName = sender.display_name ?? sender.email
   const toName = recipient.display_name ?? recipient.email
 
-  try {
-    const info = await transporter.sendMail({
-      from: `"${fromName}" <${sender.email}>`,
-      to: `"${toName}" <${recipient.email}>`,
-      subject,
-      text: body,
-      headers: {
-        'X-Warming': 'true',
-        'X-Mailer': 'PipeIQ',
-      },
-    })
-    return { messageId: info.messageId, subject }
-  } catch (err) {
-    console.error(`[warming] SMTP send failed ${sender.email} → ${recipient.email}:`, err)
-    return null
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    const transporter = buildTransporter(sender)
+    try {
+      const info = await transporter.sendMail({
+        from: `"${fromName}" <${sender.email}>`,
+        to: `"${toName}" <${recipient.email}>`,
+        subject,
+        text: body,
+        headers: {
+          'X-Warming': 'true',
+          'X-Mailer': 'PipeIQ',
+        },
+      })
+      return { messageId: info.messageId, subject }
+    } catch (err) {
+      if (attempt === 2) {
+        console.error(`[warming] SMTP send failed ${sender.email} → ${recipient.email}:`, err)
+      } else {
+        console.warn(`[warming] SMTP send attempt ${attempt} failed, retrying…`, err)
+        await new Promise((r) => setTimeout(r, 2000))
+      }
+    }
   }
+  return null
 }
 
 // ─── Core warming run for a workspace ────────────────────────────────────────
@@ -222,13 +259,15 @@ export async function runWarmingCycle(workspaceId: string): Promise<WarmingRunSu
 
   const today = new Date().toISOString().slice(0, 10)
 
+  // Engagement tasks are collected and awaited after all sends complete,
+  // preserving the human-like delay while ensuring nothing is lost.
+  const engagementTasks: Promise<void>[] = []
+
   for (const sender of inboxes) {
-    // Determine how many sends this inbox should do today
-    const startDate = sender.last_warmed_at
-      ? new Date(sender.last_warmed_at)
-      : new Date(sender.created_at)
+    // Use created_at as the ramp base — last_warmed_at resets daily and would
+    // keep every inbox stuck in week 1 of the ramp forever.
     const daysSinceStart = Math.floor(
-      (Date.now() - startDate.getTime()) / (1000 * 60 * 60 * 24),
+      (Date.now() - new Date(sender.created_at).getTime()) / (1000 * 60 * 60 * 24),
     )
     const dailyTarget = computeDailyTarget(daysSinceStart, sender.daily_target)
 
@@ -244,14 +283,15 @@ export async function runWarmingCycle(workspaceId: string): Promise<WarmingRunSu
     const remaining = dailyTarget - alreadySent
     if (remaining <= 0) continue
 
-    // Pick recipients (other inboxes in workspace, excluding self)
-    const recipients = inboxes.filter((r) => r.id !== sender.id)
+    // Shuffle recipients so we don't always send to the same inbox first
+    const recipients = shuffled(inboxes.filter((r) => r.id !== sender.id))
     if (recipients.length === 0) continue
 
     const toSend = Math.min(remaining, recipients.length)
+    let sentThisRun = 0
 
     for (let i = 0; i < toSend; i++) {
-      const recipient = recipients[i % recipients.length]
+      const recipient = recipients[i]
 
       const result = await sendWarmingEmail(sender as WarmingInbox, recipient as WarmingInbox)
       if (!result) {
@@ -260,6 +300,7 @@ export async function runWarmingCycle(workspaceId: string): Promise<WarmingRunSu
       }
 
       emailsSent++
+      sentThisRun++
 
       // Log the send
       await db.from('warming_logs').insert({
@@ -274,39 +315,59 @@ export async function runWarmingCycle(workspaceId: string): Promise<WarmingRunSu
       // Small delay to avoid SMTP rate limits
       await new Promise((r) => setTimeout(r, 1500))
 
-      // Recipient engagement: open + move to inbox via IMAP (with random delay 5-30s)
+      // Queue engagement with a human-like delay (5-30s), awaited after send loop
       const engageDelay = 5000 + Math.random() * 25000
-      setTimeout(async () => {
-        const engagement = await engageReceivedEmail(
-          recipient as WarmingInbox,
-          sender.email,
-          result.messageId,
-        )
-        await db.from('warming_logs').insert({
-          workspace_id: workspaceId,
-          sender_inbox_id: recipient.id,
-          recipient_inbox_id: sender.id,
-          direction: 'received',
-          message_id: result.messageId,
-          subject: result.subject,
-          opened: true,
-          moved_to_inbox: engagement.movedToInbox,
-          landed_in_spam: engagement.landedInSpam,
-        })
-        // Update spam_hits if landed in spam (negative signal)
-        if (engagement.landedInSpam) {
-          await db.rpc('increment_spam_hits', { p_inbox_id: sender.id, p_date: today })
-        }
-      }, engageDelay)
+      const capturedResult = result
+      const capturedRecipient = recipient
+      engagementTasks.push(
+        new Promise<void>((resolve) => setTimeout(resolve, engageDelay)).then(async () => {
+          try {
+            const engagement = await engageReceivedEmail(
+              capturedRecipient as WarmingInbox,
+              sender.email,
+              capturedResult.messageId,
+            )
+            await db.from('warming_logs').insert({
+              workspace_id: workspaceId,
+              sender_inbox_id: capturedRecipient.id,
+              recipient_inbox_id: sender.id,
+              direction: 'received',
+              message_id: capturedResult.messageId,
+              subject: capturedResult.subject,
+              opened: true,
+              moved_to_inbox: engagement.movedToInbox,
+              landed_in_spam: engagement.landedInSpam,
+            })
+            if (engagement.landedInSpam) {
+              await db.rpc('increment_spam_hits', { p_inbox_id: sender.id, p_date: today })
+            }
+          } catch (err) {
+            console.warn(`[warming] Engagement task failed for ${capturedRecipient.email}:`, err)
+          }
+        }),
+      )
     }
 
-    // Upsert schedule row
+    if (sentThisRun === 0 && toSend > 0) {
+      // All sends failed — mark inbox as errored so it is skipped next cycle
+      await db
+        .from('warming_inboxes')
+        .update({
+          status: 'error',
+          error_note: 'All SMTP sends failed during warming cycle',
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', sender.id)
+      continue
+    }
+
+    // Upsert schedule row with actual successful sends (not the attempted target)
     await db.from('warming_schedule').upsert(
       {
         inbox_id: sender.id,
         date: today,
         target_sends: dailyTarget,
-        actual_sends: alreadySent + toSend,
+        actual_sends: alreadySent + sentThisRun,
       },
       { onConflict: 'inbox_id,date' },
     )
@@ -316,11 +377,15 @@ export async function runWarmingCycle(workspaceId: string): Promise<WarmingRunSu
       .from('warming_inboxes')
       .update({
         last_warmed_at: new Date().toISOString(),
-        current_daily_sent: alreadySent + toSend,
+        current_daily_sent: alreadySent + sentThisRun,
+        error_note: null,
         updated_at: new Date().toISOString(),
       })
       .eq('id', sender.id)
   }
+
+  // Await all engagement tasks before returning so nothing is silently dropped
+  await Promise.allSettled(engagementTasks)
 
   // Recalculate health scores
   await refreshHealthScores(workspaceId, db)
@@ -396,9 +461,12 @@ export async function testSmtpConnection(
     secure,
     auth: { user, pass },
     tls: { rejectUnauthorized: false },
+    connectionTimeout: 30_000,
+    socketTimeout: 60_000,
+    greetingTimeout: 15_000,
   })
   try {
-    await transporter.verify()
+    await withTimeout(transporter.verify(), 35_000, `SMTP verify ${host}`)
     return { ok: true }
   } catch (err: unknown) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) }
@@ -419,10 +487,11 @@ export async function testImapConnection(
     logger: false,
   })
   try {
-    await client.connect()
+    await withTimeout(client.connect(), IMAP_TIMEOUT_MS, `IMAP connect ${host}`)
     await client.logout()
     return { ok: true }
   } catch (err: unknown) {
+    await client.logout().catch(() => {})
     return { ok: false, error: err instanceof Error ? err.message : String(err) }
   }
 }
